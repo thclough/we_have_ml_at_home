@@ -10,7 +10,7 @@ class Web:
 
     learnable = True
     """Weights layer to linearly transform activation values"""
-    def __init__(self, output_shape, input_shape=None):
+    def __init__(self, output_shape, input_shape=None, seed=100):
         
         self.input_layer_flag = False
         self.output_layer = None
@@ -18,6 +18,8 @@ class Web:
 
         self.input_shape = input_shape
         self.output_shape = output_shape
+
+        self._seed = seed
 
         self._weights = None
         self._bias = None
@@ -38,7 +40,8 @@ class Web:
         else:
             factor = 1
 
-        self._weights = np.random.normal(size=(self.input_shape, self.output_shape)) * np.sqrt(factor / input_size)
+        rng = np.random.default_rng(self._seed)
+        self._weights = rng.normal(size=(self.input_shape, self.output_shape)) * np.sqrt(factor / input_size)
         if not self.feeds_into_norm:
             self._bias = np.zeros(shape=self.output_shape) 
     
@@ -223,7 +226,9 @@ class Dropout:
 class BatchNorm:
     learnable = True
 
-    def __init__(self):
+    def __init__(self, seed=199):
+        self._seed = 100
+
         self._scale = None
         self._shift = None
         
@@ -239,7 +244,8 @@ class BatchNorm:
         input_size = utils.dim_size(self.input_shape)
 
         # scale and shift
-        self._scale = np.random.normal(input_size) * np.sqrt(1 / input_size)
+        rng = np.random.default_rng(self._seed)
+        self._scale = rng.normal(input_size) * np.sqrt(1 / input_size)
         self._shift = np.zeros(shape=input_size)
 
         # params for inference normalization
