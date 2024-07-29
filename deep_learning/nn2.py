@@ -8,7 +8,7 @@ from . import learning_funcs
 
 import matplotlib.pyplot as plt
 
-class ChunkNN:
+class GeneratorNN:
     """Simple NN class"""
 
     def __init__(self):
@@ -92,8 +92,7 @@ class ChunkNN:
                 layer.set_epoch_dropout_mask(epoch)
 
     def fit(self,
-            train_generator,
-            dev_generator=None,
+            generator_manager,
             learning_scheduler=learning_funcs.ConstantRate(1),
             reg_strength=0,
             num_epochs=30,
@@ -107,8 +106,7 @@ class ChunkNN:
         
         self._fit_clear(learning_scheduler, batch_prob, batch_seed, verbose)
 
-        self.refine(train_generator=train_generator,
-                    dev_generator=dev_generator,
+        self.refine(generator_manager=generator_manager,
                     reg_strength=reg_strength,
                     num_epochs=num_epochs,
                     epoch_gap=epoch_gap,
@@ -158,8 +156,7 @@ class ChunkNN:
             raise Exception("Please add a loss function")
         
     def refine(self,
-            train_generator,
-            dev_generator=None,
+            generator_manager,
             reg_strength=None,
             num_epochs=15,
             epoch_gap=5,
@@ -171,17 +168,16 @@ class ChunkNN:
         if not self._has_fit:
             raise Exception("Please fit the model before refining")
 
-        if not train_generator._train_generator:
+        if not generator_manager.train_generator._train_generator:
             raise Exception("Given train chunk must be a valid train chunk (_train_generator attribute set to True)")
-        
-        self.train_generator = train_generator
+
+        self.generator_manager = generator_manager
 
         # set chunks
-        batch_size = train_generator.batch_size
+        batch_size = generator_manager.train_generator.batch_size
 
         self._dev_flag = False
-        if dev_generator is not None:
-            self.dev_generator = dev_generator
+        if generator_manager.dev_generator is not None:
             self._dev_flag = True
 
         # add rounds
@@ -216,7 +212,7 @@ class ChunkNN:
             # set a seed for sampling batches for loss
             rng2 = np.random.default_rng(self._batch_seed)
             # start_gen = time.time()
-            for X_train, y_train in train_generator.generate():
+            for X_train, y_train in self.generator_manager.train_generator.generate():
                 # end_gen = time.time()
                 # print(f"gen time {end_gen-start_gen}")
 
@@ -241,7 +237,7 @@ class ChunkNN:
             if epoch % epoch_gap == 0:
                 gap_start_time = time.time()
                 
-                epoch_train_cost = self.generator_cost(self.train_generator)
+                epoch_train_cost = self.generator_cost(self.generator_manager.train_generator)
                 self._train_costs.append(epoch_train_cost)
 
                 if verbose:
@@ -249,7 +245,7 @@ class ChunkNN:
                     print(f"\t Training cost: {epoch_train_cost}")
 
                 if self._dev_flag:
-                    epoch_dev_cost = self.generator_cost(self.dev_generator)
+                    epoch_dev_cost = self.generator_cost(self.generator_manager.dev_generator)
                     self._dev_costs.append(epoch_dev_cost)
                     if verbose:
                         print(f"\t Dev cost: {epoch_dev_cost}")
@@ -273,7 +269,9 @@ class ChunkNN:
 
             if display and display_path:
                 fig.savefig(display_path)
-
+        
+        # if this doesn't happen, axis hold onto a "ghost" artist/collection if saved and reloaded, cannot add to figs in next refine
+        ax.cla()
         plt.close()
 
     # PROP
@@ -308,7 +306,7 @@ class ChunkNN:
     
     # EPOCH PLOT 
     def _initialize_epoch_plot(self):
-        plt.close()
+        #plt.close()
         fig, ax = plt.subplots()
         ax.set_title(f"Average Loss ({self.loss_layer.loss_func.name}) vs. Epoch")
         ax.set_xlabel("Epoch")
@@ -323,8 +321,15 @@ class ChunkNN:
                         verticalalignment='top', 
                         horizontalalignment='left',
                         transform=ax.get_xaxis_transform())
+            
+            # when adding to a new figure, the transform/scale of the Path Collections 
+            # somehow are in axes coordinates (0 to 1 across the axis), you have to change to data coordinates (true data of the axis)
+            self._train_collection.set_offset_transform(ax.transData)
+            self._dev_collection.set_offset_transform(ax.transData)
+            ax.add_collection(self._train_collection)
+            ax.add_collection(self._dev_collection)
+
         return fig, ax
-    
     def _update_epoch_plot(self, fig, ax, epoch, num_epochs):
         """Updates training plot to display average losses
 
@@ -339,7 +344,7 @@ class ChunkNN:
             ax.legend()
         else:
             self._update_scatter(self._train_collection, range(0,epoch+1), self._train_costs)
-
+            print(self._train_collection._offsets)
         if self._dev_flag:
             if not self._dev_collection:
                 self._dev_collection = ax.scatter(range(0,epoch+1), self._dev_costs, marker="x", c="blue", alpha=.5, label="Average dev loss")
@@ -349,6 +354,7 @@ class ChunkNN:
 
         max_val = max([d for d in self._dev_costs if d is not None] + [t for t in self._train_costs if t is not None])
         ax.set(xlim=[-.5,num_epochs], ylim=[min(0, max_val*2),max(0, max_val*2)])
+
         plt.pause(.2)
 
     @staticmethod
@@ -446,12 +452,12 @@ class ChunkNN:
     
     # PERFORMANCE
 
-    def accuracy(self, eval_chunk):
+    def accuracy(self, eval_generator):
         
         eval_right_sum = 0
         eval_len_sum = 0
 
-        for X_eval, y_eval in eval_chunk.generate():
+        for X_eval, y_eval in eval_generator.generate():
             y_pred = self.predict_labels(X_eval)
 
             if not isinstance(self.loss_layer.loss_func, node_funcs.BCE):
@@ -464,11 +470,11 @@ class ChunkNN:
 
         return accuracy
     
-    def class_report(self, eval_chunk):
+    def class_matrix(self, eval_generator):
         """Create classification matrix for the given chunk.
         
         Args:
-            eval_chunk (Chunk) : chunk to generate classification matrix for. 
+            eval_generator (Chunk) : chunk to generate classification matrix for. 
                 True labels along 0 axis and predicted labels along 1st axis.
 
         Returns:
@@ -481,7 +487,7 @@ class ChunkNN:
         # separate report dict and labels in case labels are not 0 indexes
         labels = set()
 
-        for X_eval, y_eval in eval_chunk.generate():
+        for X_eval, y_eval in eval_generator.generate():
             
             self._modify_labels_and_class_matrix_dict(X_eval,y_eval,labels,class_matrix_dict)
         
@@ -490,7 +496,15 @@ class ChunkNN:
         return sorted_labels_key, class_matrix, f1s
   
     def _modify_labels_and_class_matrix_dict(self, X_eval, y_eval, labels, class_matrix_dict):
-
+        """predict the label in teh X_eval for the dataset and add the (true_label, pred_label) count in the class_matrix_dict,
+        if there is a new label then add to labels set
+        
+        Args:
+            X_eval (numpy.nadarray) : chunk/batch of examples to be evaluated
+            y_eval (numpy.ndarray) : chunk/batch of labels for X_eval
+            labels (set) : set of unique labels seen in the class_matrix_dict
+            class_matrix_dict (dict) : (true_label, pred_label) count dictionary
+        """
         y_pred_eval = self.predict_labels(X_eval)
 
         if not isinstance(self.loss_layer.loss_func, node_funcs.BCE):
@@ -552,92 +566,45 @@ class ChunkNN:
         potential_model._loaded_model = True
         
         # clear graphing data
-        potential_model._train_collection = []
-        potential_model._dev_collection = []
+        # potential_model._train_collection = []
+        # potential_model._dev_collection = []
         return potential_model
 
-
-class SuperChunkNN(ChunkNN):
-
-    def fit(self,
-            chunk_manager,
-            dev_key=None,
-            learning_scheduler=learning_funcs.ConstantRate(1),
-            reg_strength=0,
-            num_epochs=30,
-            epoch_gap=5,
-            batch_prob=.01,
-            batch_seed=100,
-            model_path=None,
-            display_path=None,
-            verbose=True, 
-            display=True):
-
-        super()._fit_clear(learning_scheduler, batch_prob, batch_seed, verbose)
-
-        self.refine(chunk_manager=chunk_manager,
-                    dev_key=dev_key,
-                    reg_strength=reg_strength,
-                    num_epochs=num_epochs,
-                    epoch_gap=epoch_gap,
-                    model_path=model_path,
-                    display_path=display_path,
-                    verbose=verbose, 
-                    display=display)
-    
-    def refine(self,
-                chunk_manager=None,
-                dev_key=None,
-                reg_strength=None,
-                num_epochs=15,
-                epoch_gap=5,
-                model_path=None,
-                display_path=None,
-                verbose=True, 
-                display=True):
-        
-        if chunk_manager is not None:
-            self.chunk_manager = chunk_manager
-
-            train_generator = no_resources2.ChunkManagerChild(chunk_manager, chunk_manager.train_key, train_generator=True)
-
-            if dev_key is not None:
-                dev_generator = no_resources2.ChunkManagerChild(chunk_manager, dev_key)
-            else:
-                dev_generator = None
-
-        super().refine(train_generator=train_generator,
-                        dev_generator=dev_generator,
-                        reg_strength=reg_strength,
-                        num_epochs=num_epochs,
-                        epoch_gap=epoch_gap,
-                        model_path=model_path,
-                        display_path=display_path,
-                        verbose=verbose, 
-                        display=display)
-        
     def class_report(self):
+        """Generate classification report for all of the generators in the manager"""
+        class_matrix_dict_of_dicts = {set_name:dict() for set_name in self.generator_manager.dataset_names}
 
-        class_matrix_dict_of_dicts = {set_name:dict() for set_name in self.chunk_manager.data_split.keys()}
+        labels_dict = {set_name:set() for set_name in self.generator_manager.dataset_names}
 
-        labels_dict = {set_name:set() for set_name in self.chunk_manager.data_split.keys()}
+        if isinstance(self.generator_manager, no_resources2.ChunkManager):
+            for chunk_data_dict in self.generator_manager.generate_all():
+                for set_name, data_chunk in chunk_data_dict.items():
+                    
+                    class_matrix_dict = class_matrix_dict_of_dicts[set_name]
+                    labels = labels_dict[set_name]
 
-        for chunk_data_dict in self.chunk_manager.generate_all():
-            for set_name, data_chunk in chunk_data_dict.items():
+                    X_eval, y_eval = data_chunk
+
+                    self._modify_labels_and_class_matrix_dict(X_eval, y_eval, labels, class_matrix_dict)
+                
+        elif isinstance(self.generator_manager, no_resources2.MiniBatchManager):
+            mb_data_dict = self.generator_manager.generate_all()
+            for set_name, data in mb_data_dict.items():
                 
                 class_matrix_dict = class_matrix_dict_of_dicts[set_name]
                 labels = labels_dict[set_name]
 
-                X_eval, y_eval = data_chunk
+                X_eval, y_eval = data
 
                 self._modify_labels_and_class_matrix_dict(X_eval, y_eval, labels, class_matrix_dict)
-
+            
         report_items_dict = dict()
 
-        for set_name in self.chunk_manager.data_split.keys():
+        for set_name in self.generator_manager.dataset_names:
             labels = labels_dict[set_name]
             class_matrix_dict = class_matrix_dict_of_dicts[set_name]
 
             report_items_dict[set_name] = self._create_report_items(class_matrix_dict, labels)
 
         return report_items_dict
+    
