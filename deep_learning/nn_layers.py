@@ -1,15 +1,16 @@
 import numpy as np
-from . import no_resources2
-from . import node_funcs
-from . import utils
+from deep_learning import no_resources
+from deep_learning import node_funcs
+from deep_learning import utils
 
 import time
 
 # WEB LAYER
 class Web:
+    """Weights layer to linearly transform activation values"""
 
     learnable = True
-    """Weights layer to linearly transform activation values"""
+    
     def __init__(self, output_shape, input_shape=None, seed=100):
         
         self.input_layer_flag = False
@@ -105,7 +106,7 @@ class Web:
 
     def _update_param(self, param, grad, learning_rate):
 
-        if isinstance(grad, no_resources2.RowSparseArray):
+        if isinstance(grad, no_resources.RowSparseArray):
             (learning_rate * grad).subtract_from_update(param)
         else:
             param -= (learning_rate * grad)
@@ -308,7 +309,7 @@ class BatchNorm:
     
     def _update_param(self, param, grad, learning_rate):
 
-        if isinstance(grad, no_resources2.RowSparseArray):
+        if isinstance(grad, no_resources.RowSparseArray):
             (learning_rate * grad).subtract_from_update(param)
         else:
             param -= (learning_rate * grad)
