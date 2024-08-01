@@ -4,6 +4,7 @@
 import numpy as np
 from deep_learning import nn_layers
 from deep_learning import node_funcs
+import joblib
 
 class FeedMeForwardNN: 
     """Feed forward neural network"""
@@ -240,6 +241,16 @@ class FeedMeForwardNN:
         accuracy = (y_pred == y).sum() / X.shape[0]
 
         return accuracy
+    
+    def save_model(self, path):
+        joblib.dump(self, path)
+
+    @ classmethod
+    def load_model(cls, path):
+        potential_model = joblib.load(path)
+        if not isinstance(potential_model, cls):
+            raise TypeError(f"Loaded model must be of type {cls}")
+        return potential_model
 
 class RecurrentNN:
     pass

@@ -33,9 +33,10 @@ class NNDriver:
             verbose=True, 
             display=True):
         
-        self._fit_clear(learning_scheduler, batch_prob, batch_seed, verbose)
+        self._fit_clear(batch_prob, batch_seed, verbose)
 
         self.refine(data_factory=data_factory,
+                    learning_scheduler=learning_scheduler,
                     reg_strength=reg_strength,
                     num_epochs=num_epochs,
                     epoch_gap=epoch_gap,
@@ -44,7 +45,7 @@ class NNDriver:
                     verbose=verbose, 
                     display=display)
     
-    def _fit_clear(self, learning_scheduler, batch_prob, batch_seed, verbose):
+    def _fit_clear(self, batch_prob, batch_seed, verbose):
 
         # validate inputs def validate_structure
         self.model._val_structure()
@@ -53,10 +54,10 @@ class NNDriver:
         self.model._has_fit = True
         self._epoch = 0
 
+        self._learning_scheduler = None
+
         self._train_costs = []
         self._dev_costs = []
-
-        self._learning_scheduler = learning_scheduler
 
         self._learning_rates = []
         self._reg_strengths = []
@@ -78,6 +79,7 @@ class NNDriver:
         
     def refine(self,
             data_factory,
+            learning_scheduler=None,
             reg_strength=None,
             num_epochs=15,
             epoch_gap=5,
@@ -94,6 +96,8 @@ class NNDriver:
 
         self.data_factory = data_factory
 
+        if learning_scheduler is not None:
+            self._learning_scheduler = learning_scheduler
         # set chunks
         batch_size = data_factory.train_generator.batch_size
 
@@ -215,12 +219,13 @@ class NNDriver:
                         horizontalalignment='left',
                         transform=ax.get_xaxis_transform())
             
-            # when adding to a new figure, the transform/scale of the Path Collections 
+            # when adding to a new figure, the transforms/scale of the Path Collections 
             # somehow are in axes coordinates (0 to 1 across the axis), you have to change to data coordinates (true data of the axis)
             self._train_collection.set_offset_transform(ax.transData)
-            self._dev_collection.set_offset_transform(ax.transData)
             ax.add_collection(self._train_collection)
-            ax.add_collection(self._dev_collection)
+            if self._dev_flag:
+                self._dev_collection.set_offset_transform(ax.transData)
+                ax.add_collection(self._dev_collection)
 
         return fig, ax
 
