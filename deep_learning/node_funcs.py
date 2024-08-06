@@ -89,7 +89,7 @@ class LeakyReLU:
         """Leaky rectified linear unit: max(0.1*input,input)
         
         Args:
-            x (vector): input vector ofLeaky ReLU
+            x (vector): input vector of Leaky ReLU
         
         Returns:
             (vector) : Leaky ReLU output
@@ -109,6 +109,35 @@ class LeakyReLU:
         """
         return np.where(x < 0, 0.1, 1)
     
+class TanH:
+
+    @staticmethod
+    def forward(x):
+        """Hyperbolic tangent : (e^x - e^-x) / (e^x + e^-x)
+        
+        Args:
+            x (vector): input vector of tanh
+        
+        Returns:
+            (vector) : tanh output
+        
+        """
+        return (np.exp(x) - np.exp(-x)) / (np.exp(x) + np.exp(-x))
+
+    @staticmethod
+    def backward(x):
+        """Jacobian of hyperbolic tangent
+        
+        Args:
+            x (vector) : input of tanh
+        
+        Returns:
+            (vector) : Jacobian of tanh given input
+        """
+        return 1 - TanH.forward.tanh(x)**2
+    
+# SOFTMAX
+
 class Softmax:
 
     @staticmethod

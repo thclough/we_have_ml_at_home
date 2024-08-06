@@ -2,6 +2,20 @@ import gzip
 import os
 import traceback
 import regex as re
+from deep_learning import nn_layers
+
+def nonneg_int(cand, var_name):
+    """Checks if the passed value is a nonnegative integer
+    
+    Args:
+        cand (float) : value to check if nonnegative integer or not
+        var_name (str) : name of variable to use in errors raised
+    """
+    if type(cand) != int:
+        raise TypeError(f"{var_name} must be an integer")
+        
+    if cand < 1: 
+        raise TypeError(f"{var_name} must be positive")       
 
 def get_file_dir(source_path: str) -> str:
     """Retrieve directory of source path file"""
@@ -19,16 +33,13 @@ def get_file_dir(source_path: str) -> str:
     
 def dim_size(dims):
     if isinstance(dims, tuple):
-        product = 1
-        for dim in dims:
-            product *= dim
+        size = dims[0]
     elif isinstance(dims, int):
-        product = dims
+        size = dims
     else:
         raise TypeError("Dims must be int or tuple")
     
-    return product
-
+    return size
 
 class JarOpener:
     """A file opener to read a file at a given path
@@ -97,3 +108,66 @@ class JarOpener:
 
         # return False if want to propagate exceptions outside of the context block (not supressed)
         return False
+
+# GRAPH UTILS
+
+def find_graph_start_nodes(graph_dict):
+    """Find the starting nodes of a graph represented by a dictionary
+    
+    Args:
+        graph_dict (dict) : {input_nodes : list_of_neighbor_nodes}
+
+    Returns:
+        starting_nodes (list) : list of nodes with no incoming edge
+    """
+
+    incoming_count_dict = {}
+    
+    {key:0 for key in graph_dict.keys()}
+
+    for node in graph_dict:
+        # add node to dict if not already in dict
+        incoming_count_dict[node] = incoming_count_dict.get(node, 0)
+        for neighbor in graph_dict[node]:
+            incoming_count_dict[neighbor] = incoming_count_dict.get(neighbor, 0) + 1
+
+    starting_nodes = [node for node in incoming_count_dict if incoming_count_dict[node]==0]
+
+    return starting_nodes
+        
+def reverse_graph(graph_dict):
+    """Reverses the edges of a digraph and returns an appropriate dictionary of the new graph
+    
+    Args:
+        graph_dict (dict) : {input_nodes : list_of_neighbor_nodes}
+
+    Returns:
+        reversed_graph_dict (dict) : {input_nodes : list_of_neighbor_nodes} (of reversed graph)
+    """
+    
+    reversed_graph_dict = {}
+
+    for start_node, end_nodes in graph_dict.items():
+        for end_node in end_nodes:
+            value = reversed_graph_dict.get(end_node, [])
+            value.append(start_node)
+            reversed_graph_dict[end_node] = value
+
+    return reversed_graph_dict
+
+def graph_dict_to_edge_list(graph_dict):
+    """create list of edges from graph dict
+    
+    Args:
+        graph_dict (dict) : {input_nodes : list_of_neighbor_nodes}
+
+    Returns:
+        edge_list (list) : list of connections
+    """
+    edge_list = []
+
+    for start_node, end_nodes in graph_dict.items():
+        for end_node in end_nodes:
+            edge_list.append((start_node, end_node))
+
+    return edge_list

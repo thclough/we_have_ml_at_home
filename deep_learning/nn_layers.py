@@ -2,20 +2,59 @@ import numpy as np
 from deep_learning import no_resources
 from deep_learning import node_funcs
 from deep_learning import utils
-
 import time
 
+
+# TODO
+
+# make input layers for data and also dummy variables (like first state in an RNN)
+# make joint layer a parent class, joint layer functionality
+
+
+# COMPLETED
+# make use_bias term so does not have to be automatically decided
+# make initialization a parameter so output layer does not need to be tracked for automatic initialization
+# Create an input layer so (calc_input_grad_flag) can be easily set
+
+
+# REJECTED
+# Create an input layer so (ignore_input_grad) can then be forgotten (weird to calculate gradients this way)
+
+class Layer:
+
+    _node_id_counter = 0
+
+    def __init__(self):
+        self.node_id = Layer._node_id_counter
+        Layer._node_id_counter += 1
+
+    def __hash__(self):
+        return hash(self.node_id)
+
+    def __eq__(self, other):
+        if isinstance(other, Layer):
+            return self.node_id == other.node_id
+        return False
+
 # WEB LAYER
-class Web:
-    """Weights layer to linearly transform activation values"""
+class Web(Layer):
+    """Weights layer to linearly transform inputs
+    
+    Attributes:
+        init_factor (int) : numerator over input size to set standard deviation of normal distribution for sampling initial weight values
+    
+    """
 
     learnable = True
     
-    def __init__(self, output_shape, input_shape=None, seed=100):
+    def __init__(self, output_shape, input_shape=None, init_factor=1, use_bias=True, seed=100, ):
         
-        self.input_layer_flag = False
-        self.output_layer = None
-        self.feeds_into_norm = False
+        self.calc_input_grad_flag = True
+        # init factor two for ReLU
+        self.init_factor = init_factor
+        self.use_bias = use_bias
+
+        super().__init__()
 
         self.input_shape = input_shape
         self.output_shape = output_shape
@@ -25,45 +64,38 @@ class Web:
         self._weights = None
         self._bias = None
 
-        self._input = None
+        self.input = None
 
     # INITIALIZE PARAMS
 
     def initialize_params(self):
-
+        
         input_size = utils.dim_size(self.input_shape)
 
-        if isinstance(self.output_layer, (Activation, Loss)):
-            if isinstance(self.output_layer.activation_func, (node_funcs.ReLU, node_funcs.LeakyReLU)): 
-                factor = 2
-            else:
-                factor = 1
-        else:
-            factor = 1
-
         rng = np.random.default_rng(self._seed)
-        self._weights = rng.normal(size=(self.input_shape, self.output_shape)) * np.sqrt(factor / input_size)
-        if not self.feeds_into_norm:
-            self._bias = np.zeros(shape=self.output_shape) 
-    
-    # PROPAGATE
+        self._weights = rng.normal(size=(self.input_shape, self.output_shape)) * np.sqrt(self.init_factor / input_size)
 
+        if self.use_bias:
+            self._bias = np.zeros(shape=self.output_shape)
+
+    # PROPAGATE
+    
     def advance(self, input, forward_prop_flag=True):
         """Move forward in the Neural net"""
 
         if forward_prop_flag: # don't save the input if the input layer
             self.input = input
 
-        if self.feeds_into_norm:
-            output = input @ self._weights 
-        else: 
+        if self.use_bias:
             output = input @ self._weights + self._bias
-
+        else:
+            output = input @ self._weights 
+        
         return output
 
     def back_up(self, output_grad_to_loss, learning_rate, reg_strength, update_params_flag=True):
         
-        if not self.input_layer_flag:
+        if self.calc_input_grad_flag:
             input_grad_to_loss = output_grad_to_loss @ self._weights.T
         else:
             input_grad_to_loss = None
@@ -71,10 +103,10 @@ class Web:
         # update params
         if update_params_flag and self.input is not None:
             
-            weights_grad_to_loss = self._calc_weights_grads(output_grad_to_loss, reg_strength=reg_strength)
+            weights_grad_to_loss = self._calc_weights_grads(output_grad_to_loss, self.input, reg_strength=reg_strength)
             self._update_param(self._weights, weights_grad_to_loss, learning_rate)
 
-            if not self.feeds_into_norm:
+            if self.use_bias:
                 bias_grad_to_loss = self._calc_bias_grads(output_grad_to_loss)
                 self._update_param(self._bias, bias_grad_to_loss, learning_rate)
 
@@ -82,17 +114,17 @@ class Web:
         self.input = None
 
         return input_grad_to_loss
-    
+
     # CALCULATE GRADIENTS
     
-    def _calc_weights_grads(self, output_grad_to_loss, reg_strength):
+    def _calc_weights_grads(self, output_grad_to_loss, input, reg_strength):
 
-        m = len(self.input)
+        m = len(input)
 
         if reg_strength != 0:
-            weights_grad_to_loss = self.input.T @ (output_grad_to_loss / m) + 2 * reg_strength * self._weights
+            weights_grad_to_loss = input.T @ (output_grad_to_loss / m) + 2 * reg_strength * self._weights
         else:
-            weights_grad_to_loss = self.input.T @ (output_grad_to_loss / m)
+            weights_grad_to_loss = input.T @ (output_grad_to_loss / m)
         
         return weights_grad_to_loss
     
@@ -110,12 +142,105 @@ class Web:
             (learning_rate * grad).subtract_from_update(param)
         else:
             param -= (learning_rate * grad)
+
+class RNN_Web(Web):
+    """Specialized learnable linear transformation for RNN. Enables back propagation through time."""
+
+    def __init__(self, output_shape, input_shape=None, seed=100, use_bias=True):
+        super().__init__()
+
+        # input stack in case replicated in BPTT
+        # the web could be replicated many times in the model and needs to store all of its past seen inputs
+        # LIFO stack
+        self._input_stack = []
+    
+    def initialize_params(self):
+        super().initialize_params()
+        # for BPTT
+        self._accumulated_weights_grad_to_loss = 0
+        self._accumulated_bias_grad_to_loss = 0
+
+    def advance(self, input, forward_prop_flag=True):
+        """Move forward in the Neural net"""
+
+        if forward_prop_flag:
+            self._input_stack.append(input)
+
+        if self.use_bias:
+            output = input @ self._weights + self._bias
+        else:
+            output = input @ self._weights 
+
+        return output
+
+    def back_up(self, output_grad_to_loss, learning_rate, reg_strength, update_params_flag=True):
         
-class Activation:
+        if self.calc_input_grad_flag:
+            input_grad_to_loss = output_grad_to_loss @ self._weights.T
+        else:
+            input_grad_to_loss = None
+
+        # fetch the input
+        input = self._input_stack.pop()
+
+        # update params
+        if update_params_flag and input is not None:
+            
+            weights_grad_to_loss = self._calc_weights_grads(output_grad_to_loss, input, reg_strength=reg_strength)
+            self._accumulated_weights_grad_to_loss += weights_grad_to_loss
+
+            # for BPTT, if are processing the first reached input for the layer, then can update with accumulated gradient
+            if len(self._input_stack) == 0:
+                self._update_param(self._weights, self._accumulated_weights_grad_to_loss, learning_rate)
+                self._accumulated_weights_grad_to_loss = 0
+
+            if self.use_bias:
+                bias_grad_to_loss = self._calc_bias_grads(output_grad_to_loss)
+                self._accumulated_bias_grad_to_loss += bias_grad_to_loss
+
+                if len(self._input_stack) == 0:
+                    self._update_param(self._bias, self._accumulated_bias_grad_to_loss, learning_rate)
+                    self._accumulated_bias_grad_to_loss = 0
+
+        return input_grad_to_loss
+
+class SameDimLayer(Layer):
+    """Parent class for layers that do not change the dimensions of their processed data"""
+    
+    def __init__(self, dim=None):
+        super().__init__()
+        self.dim = dim
+
+    @property
+    def input_shape(self):
+        return self._dim
+    
+    @input_shape.setter
+    def input_shape(self, input_shape_cand):
+        self._dim = input_shape_cand
+
+    @property
+    def output_shape(self):
+        return self._dim
+    
+    @output_shape.setter
+    def output_shape(self, output_shape_cand):
+        self._dim = output_shape_cand
+
+    @property
+    def dim(self):
+        return self._dim
+    
+    @dim.setter
+    def dim(self, cand_dim):
+        self._dim=cand_dim
+
+class Activation(SameDimLayer):
 
     learnable = False
 
     def __init__(self, activation_func):
+        super().__init__()
         
         self.activation_func = activation_func
 
@@ -135,20 +260,37 @@ class Activation:
         input_grad_to_loss = output_grad_to_loss * input_grad_to_output
 
         return input_grad_to_loss
+
+# Input Layer
+
+class InputLayer(SameDimLayer):
+
+    learnable = False
+
+    def __init__(self, dim):
+        super().__init__(dim)
+
+    def advance(self, input, forward_prop_flag):
+        return input
     
+    def back_up(self, output_grad_to_loss):
+        return output_grad_to_loss
+
 # LOSS LAYER
 
-class Loss:
+class Loss(SameDimLayer):
     
+    learnable = False
+
     def __init__(self, activation_func, loss_func):
         
         self.activation_func = activation_func
         self.loss_func = loss_func
 
+        super().__init__()
+
         self.input = None
         self.output = None
-
-        self.learnable = False
         
     def advance(self, input, forward_prop_flag=True):
         
@@ -179,15 +321,35 @@ class Loss:
         self.output = None
 
         return input_grad_to_loss
-    
+
+    @property
+    def dim(self):
+        return self._dim
+
+    @dim.setter
+    def dim(self, dim_cand):
+        if dim_cand is not None:
+            if self.loss_func == node_funcs.BCE:
+                if dim_cand != 1:
+                    raise Exception("Should use output layer of size 1 when using binary cross entropy loss,\
+                                     decrease layer size to 1 or use CE (regular cross entropy)")
+            
+            if self.loss_func == node_funcs.CE:
+                if dim_cand < 2:
+                    raise Exception("Should use cross entropy loss for multi-class classification, increase layer-size or use BCE")
+        
+        self._dim = dim_cand
+
 # EFFICIENCY LAYERS
 
-class Dropout:
+class Dropout(SameDimLayer):
     
     learnable = False
 
     def __init__(self, keep_prob, seed=100):
         
+        super().__init__()
+
         # validate the keep prob
         self._val_keep_prob(keep_prob)
 
@@ -195,8 +357,6 @@ class Dropout:
         self._seed = seed
 
         self._epoch_dropout_mask = None
-
-        self.input_shape = None
 
     @staticmethod
     def _val_keep_prob(keep_prob):
@@ -224,10 +384,13 @@ class Dropout:
 
         return input_grad_to_loss
         
-class BatchNorm:
+class BatchNorm(SameDimLayer):
     learnable = True
 
     def __init__(self, seed=199):
+
+        super().__init__()
+
         self._seed = 100
 
         self._scale = None
@@ -237,8 +400,6 @@ class BatchNorm:
         self._inf_var = None
 
         self._z_hat = None
-
-        self.input_shape = None
     
     def initialize_params(self):
 
@@ -314,7 +475,52 @@ class BatchNorm:
         else:
             param -= (learning_rate * grad)
 
+# ARCHITECTURE
 
+class JointLayer(SameDimLayer): # SOME TYPE OF JOINT
+    """Merge model outputs and sum"""
+    learnable = True
+
+    def __init__(self, activation, use_bias=True):
+        
+        super().__init__()
+        self.activation = activation
+        self._input_stack = []
+        self.use_bias = True
+
+    def initialize_params(self):
+        
+        self._accumulated_bias_grad_to_loss = 0
+        if self.use_bias:
+            self._bias = np.zeros(self.input_shape)
+
+    def advance(self, inputs, forward_prop_flag=False):
+        
+        if forward_prop_flag:
+            self._input_stack.append(input)
+
+        output = input @ self._weights + self._bias
+
+        return output
+
+    def back_up(self, output_grad_to_loss, learning_rate, reg_strength, update_params_flag=True):
+        
+        input_grad_to_loss = output_grad_to_loss @ self._weights.T
+
+        # fetch the input
+        input = self._input_stack.pop()
+
+        # update params
+        if update_params_flag and input is not None:
+                
+            bias_grad_to_loss = self._calc_bias_grads(output_grad_to_loss)
+            self._accumulated_bias_grad_to_loss += bias_grad_to_loss
+
+            if len(self._input_stack) == 0:
+                self._update_param(self._bias, self._accumulated_bias_grad_to_loss, learning_rate)
+                self._accumulated_bias_grad_to_loss = 0
+
+        return input_grad_to_loss
 
 
 
