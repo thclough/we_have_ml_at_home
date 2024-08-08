@@ -4,11 +4,11 @@ import traceback
 import regex as re
 from deep_learning import nn_layers
 
-def nonneg_int(cand, var_name):
-    """Checks if the passed value is a nonnegative integer
+def pos_int(cand, var_name):
+    """Checks if the passed value is a positive integer
     
     Args:
-        cand (float) : value to check if nonnegative integer or not
+        cand (float) : value to check if positive integer or not
         var_name (str) : name of variable to use in errors raised
     """
     if type(cand) != int:

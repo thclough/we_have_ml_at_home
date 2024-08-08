@@ -3,10 +3,13 @@
 
 import numpy as np
 from deep_learning import nn_layers, node_funcs, utils
+from deep_learning.node import Node
 import copy
 import joblib
 
 # TODO
+
+# Just unravel a models layers as nodes? makes for simpler algorithms
 # make sure the cell dict directed graph has no cycle somehow
 
 
@@ -20,6 +23,8 @@ import joblib
 ## Add teacher forcing functionality
 ## Add encoding functionality for functions such as translation
 
+## bidirectional RNN will be two regular RNN with a "cap" for the output
+
 
 # COMPLETED
 ## Make so dense layers can be a feedforward neural net
@@ -28,10 +33,11 @@ import joblib
 
 # REJECTED
 
-class MonoModelPiece: 
+class MonoModelPiece(Node): 
     """Plain feed-forward neural network that can be used as a submodel"""
 
-    def __init__(self, loss_required_flag=True):
+    def __init__(self, loss_required_flag=True, str_id=None):
+        super().__init__(str_id)
         self.layers = []
         self.loss_layer = None
 
@@ -261,11 +267,11 @@ class MonoModelPiece:
 
 class MonoModel(MonoModelPiece):
     """Stand alone mono model"""
-    
+
     def add_layer(self, layer_object):
 
         if len(self.layers) == 0:
-            if not isinstance(layer_object, nn_layers.InputLayer) :
+            if not isinstance(layer_object, nn_layers.InputLayer):
                 raise Exception("First layer must be an Input Layer")
             
         super().add_layer(layer_object)
@@ -291,7 +297,8 @@ class MonoModel(MonoModelPiece):
 
 class JointedModel:
 
-    """Model that can be represented as a digraph with multiple paths
+    """Model that can be represented as a digraph with multiple paths,
+    does not require a loss
 
     Attributes:
         cell_dict (dict) : {node -> target_nodes} graph dictionary that represents a recurrent cell
@@ -306,39 +313,51 @@ class JointedModel:
         else:
             self._recurrent_flag = False
 
-        self.cell_dict = cell_dict
+        # unravel models into layers
+        graph_dict_layers, self._connected_models = self.unravel_graph_layers(cell_dict)
+        self.cell_layers_dict = graph_dict_layers
         
         self.recurrent_dict = recurrent_dict
 
+        self._has_fit = False
+
     @property
-    def cell_dict(self):
-        return self._cell_dict
+    def cell_layers_dict(self):
+        return self._cell_layers_dict
     
     @property
     def recurrent_dict(self):
         return self._recurrent_dict
 
     def dfs_joint_search_compilation_helper(self, start_node, queue, cell_dict):
-        """recursive function for sfs_joint_search_compilation"""
+        """recursive function for sfs_joint_search_compilation
 
-        # recurrent 
-        recurrent_e = Exception("Model is recurrent, must use recurrent Webs")
+        Args:
+            start_node (Layer, Model) : node to start search on
+            queue (list) : list of nodes in queue to search
+            cell_dict (dic) : cell_graph
+        
+        code in ### is not part of base dfs algorithm
+        """
+
         if self._recurrent_flag:
-            if isinstance(start_node, MonoModelPiece):
-                for layer in start_node.layers:
-                    if isinstance(layer, nn_layers.Web):
-                        if type(layer) != nn_layers.RNN_Web:
-                            raise recurrent_e
+            recurrent_e = Exception("Model is recurrent, must use recurrent Webs")
+            if isinstance(start_node, nn_layers.Web):
+                if type(start_node) != nn_layers.RNN_Web:
+                        raise recurrent_e
+
+        if type(start_node) in [nn_layers.StackedInputLayer, nn_layers.InputLayer]:
+            if self.data_node is None:
+                self.data_node = start_node
             else:
-                if isinstance(start_node, nn_layers.Web):
-                    if type(start_node) != nn_layers.RNN_Web:
-                            raise recurrent_e
+                raise Exception("Can't have more than one data entry point")
 
-        # find loops for 
-        last_layer = self.node_layer_helper(start_node, -1)
-
+        # add node to nodes list
+        if start_node not in self.nodes:
+            self.nodes.add(start_node)
+        
         # enforce only one loss per cell
-        if isinstance(last_layer, nn_layers.Loss):
+        if isinstance(start_node, nn_layers.Loss):
             if self._has_loss:
                 raise Exception("Loss already set")
             else:
@@ -350,8 +369,9 @@ class JointedModel:
         if len(incoming_edge_list) > 1: # or could just condition on being a joint layer
             
             ### must be a joint layer 
-            if not isinstance(start_node, nn_layers.JointLayer):
+            if not isinstance(start_node, nn_layers.SumLayer):
                 raise Exception("A layer with multiple incoming connections must be a joint layer")
+            ###
 
             # filter searched edges to edges 
             filter_edge_list_searched = [edge for edge in self.cell_edge_search_history if edge[1] == start_node]
@@ -366,12 +386,10 @@ class JointedModel:
         for neighbor in neighbors:
 
             ###
-            first_layer = self.node_layer_helper(neighbor, possible_index = 0)
-            
-            if isinstance(first_layer, nn_layers.InputLayer):
+            if isinstance(neighbor, nn_layers.InputLayer):
                 raise Exception("Neighbor node cannot have an input")
             
-            if isinstance(last_layer, nn_layers.Loss):
+            if isinstance(start_node, nn_layers.Loss):
                 raise Exception("Loss nodes cannot have a neighbor")
             
             #if neighbor doesn't have an input shape then add one
@@ -401,59 +419,84 @@ class JointedModel:
 
         # initialize cell_edge_search_history
         self.cell_edge_search_history = []
+        self.nodes = set()
+        self.data_node = None
 
         # reverse graph dict for checking incoming nodes
         self.cell_edge_list = utils.graph_dict_to_edge_list(graph_dict)
 
         queue = self.start_nodes[:]
         while queue:
-            print(f"starting queue:{queue}")
             cur_node = queue.pop(0)
             self.dfs_joint_search_compilation_helper(cur_node, queue, graph_dict)
 
-    @cell_dict.setter
-    def cell_dict(self, graph_dict_cand):
-        
-        self.start_nodes = utils.find_graph_start_nodes(graph_dict_cand)
+    @cell_layers_dict.setter
+    def cell_layers_dict(self, graph_dict_layers):
+
+        self.start_nodes = utils.find_graph_start_nodes(graph_dict_layers)
         self.val_start_nodes()
 
-        self.dfs_joint_search_compilation(graph_dict_cand)
+        self.dfs_joint_search_compilation(graph_dict_layers)
 
-        self._cell_dict = graph_dict_cand
+        self._cell_layers_dict = graph_dict_layers
+
+    @staticmethod
+    def unravel_graph_layers(graph_dict):
+        """Replace models to their layers for processing. 
+        Keep track of connected models in graph dict
+        
+        Args:
+            graph_dict : {input_node -> [output_nodes]} dict, nodes are layers or models
+
+        Returns:
+            graph_layers_dict : {input_node -> [output_nodes]}, nodes are layers
+            connected_models : 
+        """
+
+        graph_layers_dict = {}
+        connected_models = set()
+
+        for start_node, target_nodes in graph_dict.items():
+
+            layer_list = []
+            for target_node in target_nodes:
+                # target node model connected to input by first layer
+                if isinstance(target_node, MonoModelPiece):
+                    
+                    layer_list.append(target_node.layers[0])
+
+                    if target_node not in connected_models:
+                        connected_models.add(target_node)
+                else:
+                    layer_list.append(target_node)
+
+            # start node model connected to output by last layer
+            if isinstance(start_node, MonoModelPiece):
+                connected_models.add(start_node)
+
+                last_layer = start_node.layers[-1]
+                graph_layers_dict[last_layer] = layer_list
+                                      
+            else:
+                graph_layers_dict[start_node] = layer_list
+
+            # handle unraveling the models
+            for model in connected_models:
+                for start_layer, target_layer in zip(model.layers[:-1], model.layers[1:]):
+                    graph_layers_dict[start_layer] = [target_layer]
+
+        return graph_layers_dict, connected_models
 
     def val_start_nodes(self):
         """Validate the start nodes of the graph. Make sure there are start nodes and that they have input layers"""
         # make sure there are starting nodes
         if len(self.start_nodes) == 0:
             raise Exception("Network graph must have at least one starting node")
-        
         # make sure starting nodes have some input shape declared
 
-        print(self.start_nodes)
         for node in self.start_nodes:
-            first_layer = self.node_layer_helper(node, possible_index = 0)
-
-            if not isinstance(first_layer, nn_layers.InputLayer):
+            if not isinstance(node, nn_layers.InputLayer):
                 raise Exception("Must declare input shape for all starting nodes")
-
-    @staticmethod
-    def node_layer_helper(node, possible_index):
-        """Retrieve layer if node is a layer or layer index (at possible index) if node is a model
-        
-        Arguments:
-            node (nn_layers.Layer or model object) : layer or model to inspect
-            possible_index (int) : possible index of layer object in model
-
-        Returns:
-            Layer (nn_layers.Layer) : layer object, either node directly or indexed layer in graph if node is graph
-        """
-
-        if type(node) == MonoModelPiece:
-            layer = node.layers[possible_index]
-        else:
-            layer = node
-
-        return layer
 
     @recurrent_dict.setter
     def recurrent_dict(self, recurrent_dict_cand):
@@ -462,9 +505,61 @@ class JointedModel:
             self.recurrent_edge_list = utils.graph_dict_to_edge_list(recurrent_dict_cand)
 
             # the terminal nodes can have no outwards connection in cell
-            # they must connect to inputlayers in the recurrent dict
+            # they must connect to input layers in the recurrent dict
         self._recurrent_dict = recurrent_dict_cand
 
+
+    # INITIALIZATION
+
+    def initialize_params(self):
+        for node in self.nodes:
+            if node.learnable:
+                node.initialize_params()
+
+    # EPOCH ROUTINES
+
+    # def epoch_routine(self, epoch):
+    #     if self._has_dropout:
+    #         self._set_epoch_dropout_masks(epoch=epoch)
+
+    # def _set_epoch_dropout_masks(self, epoch):
+
+    #     for layer in self.layers:
+    #         if isinstance(layer, nn_layers.Dropout):
+    #             layer.set_epoch_dropout_mask(epoch)
+
+    # BATCH TRAINING
+
+    def forward_prop(self, X_train):
+        
+        if type(self.data_node) == nn_layers.StackedInputLayer:
+            self.data_node.input_stack = [X_train]
+        elif type(self.data_node) == nn_layers.InputLayer:
+            input_val = self.data_node.advance(X_train, forward_prop_flag=True)
+
+        for start, target in self.cell_edge_search_history:
+            
+            # handles start
+            if type(start) == nn_layers.StateInputLayer:
+                input_val = start.discharge_input()
+            elif type(start) == nn_layers.StackedInputLayer:
+                input_val = start.discharge_input()
+            ## CHANGE 
+            elif type(start) == nn_layers.SumLayer:
+                input_val = start.discharge_output()
+
+            # print(f"input val {input_val}")
+
+            # advance or store teh cell input
+            if type(target) == nn_layers.SumLayer:
+                # print("storing input")
+                target.store_cell_input(input_val)
+            else:
+                input_val = target.advance(input_val)
+            
+            # print(type(target))
+            # print(input_val)
+        return input_val
 
 
 class RecurrentNN:
@@ -506,7 +601,7 @@ class RecurrentNN:
     
     @Tx.setter
     def Tx(self, Tx_cand):
-        utils.nonneg_int(Tx_cand, "Tx")
+        utils.pos_int(Tx_cand, "Tx")
         if Tx_cand < 2:
             raise ValueError("Tx should be greater than 1")
         self._Tx = Tx_cand
@@ -517,7 +612,7 @@ class RecurrentNN:
     
     @Ty.setter
     def Ty(self, Ty_cand):
-        utils.nonneg_int(Ty_cand, "Ty")
+        utils.pos_int(Ty_cand, "Ty")
         if Ty_cand != 1 and Ty_cand != self.Tx:
             raise ValueError("Ty must be equal to Tx or set to 1")
 
