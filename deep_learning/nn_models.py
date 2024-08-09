@@ -9,13 +9,13 @@ import joblib
 
 # TODO
 
+# fix flow forward architecture
 # make sure the cell dict directed graph has no cycle somehow adn enforce full connection
 
 
 # Create Joint models that are not just linear, multiple inputs/outputs allowed from each layer
-## Make loop functionality for recurrent networks (just evaluate last??)
 ## Make recurrent NN submodel check for RNN Web layers
-### only if autoregression should require RNN webs
+
 
 ## Add in a GRU
 ## Add teacher forcing functionality
@@ -28,7 +28,9 @@ import joblib
 ## Make so dense layers can be a feedforward neural net
 ## get rid of last_output_layer by pushing bias decision to the interface, give each layer input and output dim
 ## calc input grad flag set to False on the MonoModel Pieces (changed structure)
-# Just unravel a models layers as nodes? makes for simpler algorithms
+## Just unravel a models layers as nodes? makes for simpler algorithms
+## Make loop functionality for recurrent networks (just evaluate last??)
+## only if loop should require RNN webs used input laters
 
 # REJECTED
 
@@ -309,11 +311,13 @@ class JointedModel:
 
         # unravel models into layers
         cell_graph_layers_dict, self._connected_models = self.unravel_graph_layers(cell_dict)
-        print(cell_graph_layers_dict)
+        #print(cell_graph_layers_dict)
         self.cell_layers_dict = cell_graph_layers_dict
 
         self._has_fit = False
         self._has_dropout = False
+
+        self.timestep = 0
 
     @property
     def cell_layers_dict(self):
@@ -345,17 +349,17 @@ class JointedModel:
                 self.data_node = start_node
             else:
                 raise Exception("Can't have more than one data entry point")
-
+            
         # add node to nodes list
         if start_node not in self.layers:
             self.layers.add(start_node)
-        
-        # enforce only one loss per cell
+
         if isinstance(start_node, nn_layers.Loss):
             if self._has_loss:
-                raise Exception("Loss already set")
+                raise Exception("Can only have one loss")
             else:
                 self._has_loss = True
+                self.loss_layer = start_node
 
         # find all edges that enter the start_node
         incoming_edge_list = [edge for edge in self.cell_edge_list if edge[1] == start_node]
@@ -397,6 +401,7 @@ class JointedModel:
             self.cell_edge_search_history.append((start_node, neighbor))
             ###
 
+            # do not want to leak into next cell before current cell is traversed
             if type(neighbor) != nn_layers.StateInputLayer:
                 self.dfs_joint_search_compilation_helper(neighbor, queue, cell_dict)
 
@@ -430,7 +435,7 @@ class JointedModel:
     @cell_layers_dict.setter
     def cell_layers_dict(self, graph_dict_layers):
         self._val_graph_dict_layers(graph_dict_layers)
-        self.start_nodes = [node for node in graph_dict_layers.keys() if isinstance(node, nn_layers.InputLayer)]
+        self.start_nodes = [node for node in graph_dict_layers.keys() if type(node) in (nn_layers.InputLayer, nn_layers.StackedInputLayer, nn_layers.StateInputLayer)]
         self._val_start_nodes()
 
         self.dfs_joint_search_compilation(graph_dict_layers)
@@ -497,11 +502,6 @@ class JointedModel:
         # make sure there are starting nodes
         if len(self.start_nodes) == 0:
             raise Exception("Network graph must have at least one starting node")
-        # make sure starting nodes have some input shape declared
-
-        for node in self.start_nodes:
-            if not isinstance(node, nn_layers.InputLayer):
-                raise Exception("Must declare input shape for all starting nodes")
 
     # INITIALIZATION
 
@@ -528,49 +528,172 @@ class JointedModel:
 
     # BATCH TRAINING
 
+    def batch_total_pass(self, X_train, y_train, learning_rate, reg_strength):
+        # forward pass
+        self.forward_prop(X_train)
+
+        # perform back prop to obtain gradients and update
+        self.back_prop(X_train, y_train, learning_rate, reg_strength)
+
+
     def forward_prop(self, X_train):
-        
+        self.flow_forward_helper(X_train, True)
+
+    def flow_forward_helper(self, X, forward_prop_flag):
+        #self.flow_forward(X_train, True)
         if type(self.data_node) == nn_layers.StackedInputLayer:
-            for timestep_data in X_train:
-                self.data_node.store_input(timestep_data)
+            if len(self.data_node.cell_input_stack) == 0:
+                for timestep_data in X:
+                    #print(f"timestep data:{timestep_data} dimension:{timestep_data.shape}")
+                    self.data_node.store_cell_input(timestep_data)
+            else:
+                raise Exception("Clear data from the input stack")
+            
+            input_val = None 
 
         elif type(self.data_node) == nn_layers.InputLayer:
-            input_val = self.data_node.advance(X_train, forward_prop_flag=True)
+            input_val = self.data_node.advance(X)
             # flow turned on in class internally when advance
 
-        print(self.data_node)
-        # flowing handles when to stop this loo
         while self.data_node.flowing:
-            # while self.data_node.flowing
-            for start, target in self.cell_edge_search_history:
-                
-                if type(self.data_node) == nn_layers.InputLayer:
-                    self.data_node.flowing = False
-                
-                # handles start
-                if type(start) in [nn_layers.StateInputLayer, nn_layers.StackedInputLayer, nn_layers.SumLayer, nn_layers.Splitter]:
-                    input_val = start.discharge_cell_output()
+            self.timestep += 1
+            input_val = self.flow_forward(input_val, forward_prop_flag=forward_prop_flag)
+        
+    def flow_forward(self, input_val, forward_prop_flag, generation=False):
+        """General process for push data through the Jointed Model
+        
+        Args:
+        """
+        for start, target in self.cell_edge_search_history:
+            
+            # turn off data flow if just one entry
+            if type(self.data_node) == nn_layers.InputLayer:
+                self.data_node.flowing = False
+            
+            # handles start
+            if type(start) in [nn_layers.StateInputLayer, nn_layers.StackedInputLayer, nn_layers.SumLayer, nn_layers.Splitter]:
+                input_val = start.discharge_cell_output()
 
-                print(f"input val {input_val}")
+            #print(f"input val {input_val}")
 
-                # advance or store the cell input
-                if type(target) in [nn_layers.SumLayer, nn_layers.StateInputLayer, nn_layers.Splitter]:
-                    # print("storing input")
+            # advance or store the cell input
+            if type(target) in [nn_layers.SumLayer, nn_layers.Splitter]:
+                # print("storing input")
+                target.store_cell_input(input_val)
+            elif type(target) == nn_layers.StateInputLayer:
+                if self.data_node.flowing:
                     target.store_cell_input(input_val)
-                else:
-                    input_val = target.advance(input_val)
-                
-                print(type(target))
-                print(input_val)
-
-        return input_val
+            else:
+                if self._has_loss:
+                    last = target
+                    if target == self.loss_layer: 
+                        input_val = target.advance(input_val)
+                        # store and add to the data stack if data generation
+                        if generation:
+                            sampled = np.random.choice(range(len(input_val)), p=input_val)
+                            self.data_node.store_cell_input(sampled)
+                    else:
+                        input_val = target.advance(input_val, forward_prop_flag)
+                else:    
+                    input_val = target.advance(input_val, forward_prop_flag)
+                        
 
     def back_prop(self, X_train, y_train, learning_rate, reg_strength):
-        pass
         
-        # for our first pass we ignore getting outpts
-        for target, start in reversed(self.edge):
-            pass
+        # loss reached flag to indicate when to start calculating output gradients and updating layers
+        loss_reached_flag = False
+        while self.timestep > 0:
+            self.timestep -= 1
+            for target, start in reversed(self.edge):
+                
+                if isinstance(start, nn_layers.Loss):
+                    loss_reached_flag = True
+                    input_grad_to_loss = start.back_up(y_train)
+
+                if loss_reached_flag:
+                    if type(start) in [nn_layers.Splitter, nn_layers.StateInputLayer]:
+                        input_grad_to_loss = start.discharge_cell_input_grad()
+
+                    if type(target) in [nn_layers.Splitter, nn_layers.StateInputLayer]:
+                        target.store_cell_output_grad(input_grad_to_loss)
+                    else:
+                        if target.learnable:
+                            input_grad_to_loss = target.back_up(input_grad_to_loss, learning_rate=learning_rate, reg_strength=reg_strength)
+                        else:
+                            input_grad_to_loss = target.back_up(input_grad_to_loss)
+
+        return input_grad_to_loss
+
+    # INFERENCE/EVALUATION
+
+    def single_generation(self, X, cutoff_length):
+        """Generate outputs from a single example
+        
+        Args:
+            X (numpy.ndarray) : input single example to generate from
+            cutoff_length (int) : max length of output sequence
+
+        Returns:
+            output_sequence (list) : generated sequence of the model
+        """
+        # load in the first input
+        self.data_node.store_cell_input(X)
+
+        output_sequence = [X]
+
+        while len(output_sequence) <= cutoff_length:
+            self.flow_forward(None, False, generation=True)
+            output_sequence.append(self.data_node.cell_input_stack[-1])
+
+        return output_sequence
+
+    def predict_prob(self, X):
+        self.flow_forward_helper(X, False)
+        probs = self.loss_layer._output_stack
+        self.loss_layer._output_stack = []
+        
+        return probs
+
+    def predict_labels(self, X):
+
+        # calculate activation values for each layer (includes predicted values)
+        final_activations = self.predict_prob(X)
+
+        if isinstance(self.loss_layer.loss_func, node_funcs.BCE):
+            predictions = final_activations > .5
+        else:
+            predictions = np.argmax(final_activations, axis=-1)
+
+        return predictions
+    
+    def cost(self, X, y_true, reg_strength):
+        """Calculate the average loss depending on the loss function
+        
+        Args:
+            X (numpy array) : examples to predict on (num_examples x num_features)
+            y (numpy array) : true labels (num_examples x 1)
+
+        Returns:
+            cost (numpy array) : average loss given predictions on X and truth y
+        
+        """
+        # calculate activation values for each layer (includes predicted values)
+        y_pred = self.predict_prob(X)
+
+        # flatten y_pred and y_true to make compatible with past infrastructure
+        y_true = y_true.flatten()
+        y_pred = np.array(y_pred).flatten()
+
+        print(y_true)
+        print(y_pred)
+
+        cost = self.loss_layer.get_cost(y_pred, y_true)
+
+        # L2 regularization loss with Frobenius norm
+        if reg_strength != 0: 
+            cost = cost + reg_strength * sum(np.sum(layer._weights ** 2) for layer in self.layers if isinstance(layer, nn_layers.Web))
+
+        return cost
 
 class RecurrentNN:
     """Simple recurrent many-to-many neural network

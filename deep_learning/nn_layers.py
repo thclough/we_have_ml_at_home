@@ -50,6 +50,8 @@ class Web(Node):
 
         self._input_stack = []
 
+        self.timestep = 0
+
     # INITIALIZE PARAMS
 
     def initialize_params(self):
@@ -64,6 +66,7 @@ class Web(Node):
 
         self._accumulated_weights_grad_to_loss = 0
         self._accumulated_bias_grad_to_loss = 0
+
 
     # PROPAGATE
     
@@ -138,67 +141,6 @@ class Web(Node):
             (learning_rate * grad).subtract_from_update(param)
         else:
             param -= (learning_rate * grad)
-
-class RNN_Web(Web):
-    """Specialized learnable linear transformation for RNN. Enables back propagation through time."""
-
-    def __init__(self, output_shape, input_shape=None, init_factor=1, seed=100, use_bias=True, str_id=None):
-        super().__init__(output_shape, input_shape, init_factor, seed, use_bias, str_id)
-
-        # input stack in case replicated in BPTT
-        # the web could be replicated many times in the model and needs to store all of its past seen inputs
-        # LIFO stack
-        self._input_stack = []
-    
-    def initialize_params(self):
-        super().initialize_params()
-        # for BPTT
-        self._accumulated_weights_grad_to_loss = 0
-        self._accumulated_bias_grad_to_loss = 0
-
-    def advance(self, input, forward_prop_flag=True):
-        """Move forward in the Neural net"""
-
-        if forward_prop_flag:
-            self._input_stack.append(input)
-
-        if self.use_bias:
-            output = input @ self._weights + self._bias
-        else:
-            output = input @ self._weights 
-
-        return output
-
-    def back_up(self, output_grad_to_loss, learning_rate, reg_strength, update_params_flag=True):
-        
-        if self.calc_input_grad_flag:
-            input_grad_to_loss = output_grad_to_loss @ self._weights.T
-        else:
-            input_grad_to_loss = None
-
-        # fetch the input
-        input = self._input_stack.pop()
-
-        # update params
-        if update_params_flag and input is not None:
-            
-            weights_grad_to_loss = self._calc_weights_grads(output_grad_to_loss, input, reg_strength=reg_strength)
-            self._accumulated_weights_grad_to_loss += weights_grad_to_loss # these operations are expensive
-
-            # for BPTT, if are processing the first reached input for the layer, then can update with accumulated gradient
-            if len(self._input_stack) == 0:
-                self._update_param(self._weights, self._accumulated_weights_grad_to_loss, learning_rate)
-                self._accumulated_weights_grad_to_loss = 0
-
-            if self.use_bias:
-                bias_grad_to_loss = self._calc_bias_grads(output_grad_to_loss)
-                self._accumulated_bias_grad_to_loss += bias_grad_to_loss
-
-                if len(self._input_stack) == 0:
-                    self._update_param(self._bias, self._accumulated_bias_grad_to_loss, learning_rate)
-                    self._accumulated_bias_grad_to_loss = 0
-
-        return input_grad_to_loss
 
 class SameDimLayer(Node):
     """Parent class for layers that do not change the dimensions of their processed data"""
@@ -277,8 +219,10 @@ class InputLayer(SameDimLayer):
     def back_up(self, output_grad_to_loss):
         return output_grad_to_loss
 
-class StateInputLayer(InputLayer):
+class StateInputLayer(SameDimLayer):
     """Holds initial state for a given state and subsequent transformations for that state"""
+
+    learnable = False
 
     def __init__(self, dim, str_id=None):
         super().__init__(dim, str_id)
@@ -297,8 +241,10 @@ class StateInputLayer(InputLayer):
     def discharge_cell_input_grad(self):
         return self.cell_output_grad
 
-class StackedInputLayer(InputLayer):
+class StackedInputLayer(SameDimLayer):
     """data input for temporal models"""
+
+    learnable = False
 
     def __init__(self, dim, str_id=None):
         super().__init__(dim, str_id)
@@ -306,16 +252,17 @@ class StackedInputLayer(InputLayer):
         self.cell_output_grad_stack = []
 
     def store_cell_input(self, input_val):
-        if input_val.shape != self.dim:
+        if input_val.shape[-1] != self.dim:
             raise Exception("Data dimension mismatch between input and set dimension")
         self.cell_input_stack.append(input_val)
 
     def discharge_cell_output(self):
-        return self.input_stack.pop(0)
+        return self.cell_input_stack.pop(0)
 
     @property
     def flowing(self):
-        return len(self.cell_input_stack) == 0
+        return len(self.cell_input_stack) != 0
+
 
 # LOSS LAYER
 
@@ -579,7 +526,7 @@ class SumLayer(SameDimLayer): # SOME TYPE OF JOINT
         self.cell_input_stack = []
         self.input_grad = None
 
-        self.timestep = 0
+        self.cur_timestep = 0
 
     def store_cell_input(self, input_val):
         """Place an input in the input stack"""
@@ -602,7 +549,7 @@ class SumLayer(SameDimLayer): # SOME TYPE OF JOINT
         if len(self.cell_input_stack) == 0:
             raise Exception("No layer inputs to produce an output")
 
-        self.timestep += 1
+        self.cur_timestep += 1
 
         self.num_inputs = len(self.cell_input_stack)
 
@@ -622,14 +569,14 @@ class SumLayer(SameDimLayer): # SOME TYPE OF JOINT
     def back_up(self, output_grad_to_loss, learning_rate, reg_strength, update_params_flag=True):
         
         self.set_input_grad(output_grad_to_loss)
-        self.timestep -= 1
+        self.cur_timestep -= 1
         # update params
         if update_params_flag and self.use_bias:
                 
             bias_grad_to_loss = self._calc_bias_grads(output_grad_to_loss)
             self._accumulated_bias_grad_to_loss += bias_grad_to_loss
 
-            if self.timestep == 0:
+            if self.cur_timestep == 0:
                 self._update_param(self._bias, self._accumulated_bias_grad_to_loss, learning_rate)
                 self._accumulated_bias_grad_to_loss = 0
 
@@ -661,79 +608,6 @@ class SumLayer(SameDimLayer): # SOME TYPE OF JOINT
             self.learnable = False
 
         self._use_bias = use_bias_cand
-
-
-    
-
-class SumLayer2(SameDimLayer): # SOME TYPE OF JOINT
-    """Merge model outputs and sum"""
-
-    def __init__(self, use_bias=True):
-        
-        super().__init__()
-        self.use_bias = use_bias
-
-        self._input_stack = []
-
-        # input stack for each cell
-        self._cell_input_stack = []
-
-    def store_cell_input(self, input):
-        """Place an input in the input"""
-
-        self._cell_input_stack.append(input)
-
-    def initialize_params(self):
-        
-        if self.use_bias:
-            self._accumulated_bias_grad_to_loss = 0
-            self._bias = np.zeros(self.input_shape)
-
-    def advance(self, forward_prop_flag=False):
-        
-        output = 0
-        for input in self._cell_input_stack:
-            output += input
-
-        if self.use_bias:
-            output += self._bias
-
-        if forward_prop_flag:
-            self._input_stack.append(self._cell_input_stack)
-
-        return output
-
-    def back_up(self, output_grad_to_loss, learning_rate, reg_strength, update_params_flag=True):
-        
-        input_grad_to_loss = output_grad_to_loss @ self._weights.T
-
-        # fetch the input
-        input = self._input_stack.pop()
-
-        # update params
-        if update_params_flag and input is not None:
-                
-            bias_grad_to_loss = self._calc_bias_grads(output_grad_to_loss)
-            self._accumulated_bias_grad_to_loss += bias_grad_to_loss
-
-            if len(self._input_stack) == 0:
-                self._update_param(self._bias, self._accumulated_bias_grad_to_loss, learning_rate)
-                self._accumulated_bias_grad_to_loss = 0
-
-        return input_grad_to_loss
-
-    @property
-    def use_bias(self):
-        return self._use_bias
-    
-    @use_bias.setter
-    def use_bias(self, use_bias_cand):
-        if use_bias_cand:
-            self.learnable = True
-        else:
-            self.learnable = False
-
-        return use_bias_cand
 
 
 class GateLayer(SameDimLayer):
