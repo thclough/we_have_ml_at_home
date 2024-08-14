@@ -159,6 +159,7 @@ class NNDriver:
                 #start_gen = time.time()
 
             epoch_end_time = time.time()
+            
             if verbose:
                 print(f"Epoch completion time: {(epoch_end_time-epoch_start_time) / 3600} Hours")
             

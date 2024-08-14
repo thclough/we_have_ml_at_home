@@ -6,8 +6,7 @@ import time
 
 # TODO
 
-
-# make a data lock class like the Songo Locks
+# have to fix how these timesteps are kept track of (namely in SumLayer), excess forward prop flags
 # make joint layer a parent class, joint layer functionalities
 
 
@@ -16,6 +15,7 @@ import time
 # make initialization a parameter so output layer does not need to be tracked for automatic initialization
 # Create an input layer so (calc_input_grad_flag) can be easily set
 # make input layers for data and also dummy variables (like first state in an RNN)
+# make a data lock class like the Songo Locks (see sum layer)
 
 # REJECTED
 # Create an input layer so (ignore_input_grad) can then be forgotten (weird to calculate gradients this way)
@@ -67,13 +67,13 @@ class Web(Node):
         self._accumulated_weights_grad_to_loss = 0
         self._accumulated_bias_grad_to_loss = 0
 
-
     # PROPAGATE
     
     def advance(self, input_val, forward_prop_flag=True):
         """Move forward in the Neural net"""
 
         if forward_prop_flag:
+            #print(f"input val append: {input_val.shape}")
             self._input_stack.append(input_val)
 
         if self.use_bias:
@@ -85,6 +85,9 @@ class Web(Node):
 
     def back_up(self, output_grad_to_loss, learning_rate, reg_strength, update_params_flag=True):
         
+        #print(output_grad_to_loss.shape)
+
+        #print(output_grad_to_loss)
         if self.calc_input_grad_flag:
             input_grad_to_loss = output_grad_to_loss @ self._weights.T
         else:
@@ -101,6 +104,7 @@ class Web(Node):
 
             # for BPTT, if are processing the first reached input for the layer, then can update with accumulated gradient
             if len(self._input_stack) == 0:
+                # print(f"Updating web on {self.str_id}")
                 self._update_param(self._weights, self._accumulated_weights_grad_to_loss, learning_rate)
                 self._accumulated_weights_grad_to_loss = 0
 
@@ -109,6 +113,7 @@ class Web(Node):
                 self._accumulated_bias_grad_to_loss += bias_grad_to_loss
 
                 if len(self._input_stack) == 0:
+                    # print(f"Updating bias on {self.str_id}")
                     self._update_param(self._bias, self._accumulated_bias_grad_to_loss, learning_rate)
                     self._accumulated_bias_grad_to_loss = 0
 
@@ -117,6 +122,9 @@ class Web(Node):
     # CALCULATE GRADIENTS
     
     def _calc_weights_grads(self, output_grad_to_loss, input_val, reg_strength):
+
+        # print(f"output grad to loss: {output_grad_to_loss.shape}")
+        # print(f"input val: {input_val.shape}")
 
         m = len(input_val)
 
@@ -232,7 +240,7 @@ class StateInputLayer(SameDimLayer):
     def store_cell_input(self, cell_input_val):
         self.cell_input = cell_input_val
 
-    def discharge_cell_output(self):
+    def discharge_cell_output(self, forward_prop_flag=True):
         return self.cell_input
 
     def store_cell_output_grad(self, cell_output_grad):
@@ -256,7 +264,15 @@ class StackedInputLayer(SameDimLayer):
             raise Exception("Data dimension mismatch between input and set dimension")
         self.cell_input_stack.append(input_val)
 
-    def discharge_cell_output(self):
+    def load_data(self, data_array):
+        if len(self.cell_input_stack) == 0:
+            for timestep_data in data_array:
+                #print(f"timestep data:{timestep_data} dimension:{timestep_data.shape}")
+                self.store_cell_input(timestep_data)
+        else:
+            raise Exception("Clear data from the input stack")
+
+    def discharge_cell_output(self, forward_prop_flag=True):
         return self.cell_input_stack.pop(0)
 
     @property
@@ -285,7 +301,8 @@ class Loss(SameDimLayer):
         output = self.activation_func.forward(input_val)
 
         if forward_prop_flag:
-            #self._input_stack.append(input)
+            # if self.loss_func == node_funcs.MSE:
+            #     self._input_stack.append(input_val)
             self._output_stack.append(output)
 
         return output
@@ -297,8 +314,6 @@ class Loss(SameDimLayer):
     def get_cost(self, y_pred, y_true):
 
         cost = np.mean(self.get_total_loss(y_pred, y_true))
-
-        # L2 regularization
 
         return cost
 
@@ -480,7 +495,7 @@ class Splitter(SameDimLayer):
         self.cell_output_grad_stack = []
     # keep track of timestep for upgrading bias
 
-    def discharge_cell_output(self):
+    def discharge_cell_output(self, forward_prop_flag=True):
         if self.input is not None:
             return self.input
         else:
@@ -494,11 +509,9 @@ class Splitter(SameDimLayer):
         self.cell_output_grad_stack.append(output_grad)
 
     def discharge_cell_input_grad(self):
-        
         # set the cell output grad stack if multiplied inputs
         if self.cell_output_grad_stack:
             self.set_input_grad()
-
         # output grad to loss is the input grad to loss
         return self.input_grad
 
@@ -507,8 +520,6 @@ class Splitter(SameDimLayer):
 
         if len(self.cell_output_grad_stack) == 0:
             raise Exception("No layer output gradients to produce output gradients")
-        
-        self.timestep -= 1
 
         self.input_grad = 0
         while self.cell_output_grad_stack:
@@ -530,6 +541,7 @@ class SumLayer(SameDimLayer): # SOME TYPE OF JOINT
 
     def store_cell_input(self, input_val):
         """Place an input in the input stack"""
+        #print(f"Storing cell input")
         self.cell_input_stack.append(input_val)
 
     def initialize_params(self):
@@ -538,18 +550,19 @@ class SumLayer(SameDimLayer): # SOME TYPE OF JOINT
             self._bias = np.zeros(self.input_shape)
             self._accumulated_bias_grad_to_loss = 0
 
-    def discharge_cell_output(self):
+    def discharge_cell_output(self, forward_prop_flag=True):
         if self.cell_input_stack:
-            self.set_cell_output()
+            self.set_cell_output(forward_prop_flag)
         return self.output
 
-    def set_cell_output(self):
+    def set_cell_output(self, forward_prop_flag):
         """Set output before releasing"""
 
         if len(self.cell_input_stack) == 0:
             raise Exception("No layer inputs to produce an output")
 
-        self.cur_timestep += 1
+        if forward_prop_flag:
+            self.cur_timestep += 1
 
         self.num_inputs = len(self.cell_input_stack)
 
@@ -560,7 +573,7 @@ class SumLayer(SameDimLayer): # SOME TYPE OF JOINT
         if self.use_bias:
             self.output += self._bias
     
-    def discharge_input_grad(self):
+    def discharge_cell_input_grad(self):
         return self.input_grad
 
     def set_input_grad(self, output_grad_to_loss):
@@ -570,6 +583,9 @@ class SumLayer(SameDimLayer): # SOME TYPE OF JOINT
         
         self.set_input_grad(output_grad_to_loss)
         self.cur_timestep -= 1
+
+        #print(f"backing up {self.cur_timestep}")
+
         # update params
         if update_params_flag and self.use_bias:
                 
@@ -577,6 +593,7 @@ class SumLayer(SameDimLayer): # SOME TYPE OF JOINT
             self._accumulated_bias_grad_to_loss += bias_grad_to_loss
 
             if self.cur_timestep == 0:
+                # print(f"updating bias on {self.str_id}")
                 self._update_param(self._bias, self._accumulated_bias_grad_to_loss, learning_rate)
                 self._accumulated_bias_grad_to_loss = 0
 
@@ -608,7 +625,6 @@ class SumLayer(SameDimLayer): # SOME TYPE OF JOINT
             self.learnable = False
 
         self._use_bias = use_bias_cand
-
 
 class GateLayer(SameDimLayer):
 

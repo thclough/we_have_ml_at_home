@@ -57,6 +57,8 @@ class Identity:
 
 class ReLU:
 
+    name = "Rectified Linear Unit"
+
     @staticmethod
     def forward(x):
         """Rectified linear unit: max(0,input)
@@ -134,7 +136,7 @@ class TanH:
         Returns:
             (vector) : Jacobian of tanh given input
         """
-        return 1 - TanH.forward.tanh(x)**2
+        return 1 - TanH.forward(x)**2
     
 # SOFTMAX
 
@@ -160,9 +162,11 @@ class Softmax:
 
 ## LOSS FUNCTIONS
 
+### CLASSIFICATION
+
 class BCE: 
-    name = "Binary Cross Entropy"
     """binary cross entropy for binary classification"""
+    name = "Binary Cross Entropy"
     @staticmethod
     def forward(y_pred,y_true):
         """
@@ -185,7 +189,7 @@ class BCE:
             y_true (vector): ground_truth labels
 
         Returns:
-            (vector) : Jacobian wrt linear combination
+            (vector) : Jacobian wrt loss
         """
         return y_pred - y_true
 
@@ -249,3 +253,39 @@ class CE:
     @staticmethod
     def backward(y_pred, y_true):
         return y_pred - y_true 
+    
+### REGRESSION
+
+class RegressionLoss:
+    pass
+
+
+class MSE(RegressionLoss): 
+    """Mean Squared Error for Regression"""
+    name = "Mean Squared Error"
+
+    @staticmethod
+    def forward(y_pred,y_true):
+        """
+        Args:
+            y_pred (vector): output values
+            y_true (vector): ground_truth values
+
+        Returns:
+            (vector) : MSE loss
+        """
+        return ((y_pred-y_true) ** 2)/2
+    
+    @staticmethod
+    def backward(y_pred, y_true):
+        """Compute the gradient with respect to linear combo (z's)
+        
+        Args: 
+            y_pred (vector): output values
+            y_true (vector): ground_truth labels
+
+        Returns:
+            (vector) : Jacobian wrt loss
+        """
+
+        return y_pred - y_true

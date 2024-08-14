@@ -327,13 +327,45 @@ class JointedModel:
     def recurrent_layers_dict(self):
         return self._recurrent_layers_dict
 
-    def dfs_joint_search_compilation_helper(self, start_node, queue, cell_dict):
+    def dfs_joint_search_compilation(self, graph_dict):
+        """Search through a model graph starting with an initial_queue of nodes to search.
+        When the search reaches a joint, if all incoming connections have been searched, 
+        and the joint has unsearched edges, the joint node will be added to the FIFO queue for search. 
+        Edges are added to a list as tuples in the order that they are searched 
+        
+        Args:
+            graph_dict (dict) : {input_nodes : list_of_neighbor_nodes} graph dictionary
+
+        Returns:
+            cell_edge_search_history (list) : list of tuples representing edges searched in order of encountering those edges
+        """
+
+        # initialize cell_edge_search_history
+        self.cell_edge_search_history = []
+        self.layers = set()
+
+        # reverse graph dict for checking incoming nodes
+        self.cell_edge_list = utils.graph_dict_to_edge_list(graph_dict)
+
+        # search the state start nodes first and gather their branches
+        state_edge_search_history = []
+        for cur_node in self.state_start_nodes:
+            self.dfs_joint_search_compilation_helper(cur_node, graph_dict, state_edge_search_history)
+        
+        # then search the data nodes
+        data_edge_search_history = []
+        self.dfs_joint_search_compilation_helper(self.data_node, graph_dict, data_edge_search_history)
+
+        # attach the state branches to end of data branch, so data branch comes first
+        self.cell_edge_search_history =  data_edge_search_history + state_edge_search_history
+
+    def dfs_joint_search_compilation_helper(self, start_node, cell_dict, store_edge_list):
         """recursive function for sfs_joint_search_compilation
 
         Args:
             start_node (Layer, Model) : node to start search on
-            queue (list) : list of nodes in queue to search
-            cell_dict (dic) : cell_graph
+            cell_dict (dict) : cell_graph
+            store_edge_list (list) : list of edges to add traversed edges to
         
         code in ### is not part of base dfs algorithm
         """
@@ -344,11 +376,6 @@ class JointedModel:
         #         if type(start_node) != nn_layers.RNN_Web:
         #                 raise recurrent_e
 
-        if type(start_node) in [nn_layers.StackedInputLayer, nn_layers.InputLayer]:
-            if self.data_node is None:
-                self.data_node = start_node
-            else:
-                raise Exception("Can't have more than one data entry point")
             
         # add node to nodes list
         if start_node not in self.layers:
@@ -364,7 +391,7 @@ class JointedModel:
         # find all edges that enter the start_node
         incoming_edge_list = [edge for edge in self.cell_edge_list if edge[1] == start_node]
 
-        if len(incoming_edge_list) > 1: # or could just condition on being a joint layer
+        if len(incoming_edge_list) > 1:
             
             ### must be a joint layer 
             if not isinstance(start_node, nn_layers.SumLayer):
@@ -380,9 +407,8 @@ class JointedModel:
         
         # handle neighbors
         neighbors = cell_dict.get(start_node, [])
-
         # if connected to state input, have to have the state input come first so the input is not transformed
-
+        
         for neighbor in neighbors:
 
             ###
@@ -399,44 +425,23 @@ class JointedModel:
                 assert neighbor.input_shape == start_node.output_shape, f"{start_node} and {neighbor} dimensions do not match"
 
             self.cell_edge_search_history.append((start_node, neighbor))
+            store_edge_list.append((start_node, neighbor))
             ###
 
             # do not want to leak into next cell before current cell is traversed
             if type(neighbor) != nn_layers.StateInputLayer:
-                self.dfs_joint_search_compilation_helper(neighbor, queue, cell_dict)
-
-    def dfs_joint_search_compilation(self, graph_dict):
-        """Search through a model graph starting with an initial_queue of nodes to search.
-        When the search reaches a joint, if all incoming connections have been searched, 
-        and the joint has unsearched edges, the joint node will be added to the FIFO queue for search. 
-        Edges are added to a list as tuples in the order that they are searched 
-        
-        Args:
-            graph_dict (dict) : {input_nodes : list_of_neighbor_nodes} graph dictionary
-            initial_queue (list) : list of nodes in order of how they should be searched
-
-        Returns:
-            cell_edge_search_history (list) : list of tuples representing edges searched in order of encountering those edges
-        """
-
-        # initialize cell_edge_search_history
-        self.cell_edge_search_history = []
-        self.layers = set()
-        self.data_node = None
-
-        # reverse graph dict for checking incoming nodes
-        self.cell_edge_list = utils.graph_dict_to_edge_list(graph_dict)
-
-        queue = self.start_nodes[:]
-        while queue:
-            cur_node = queue.pop(0)
-            self.dfs_joint_search_compilation_helper(cur_node, queue, graph_dict)
+                self.dfs_joint_search_compilation_helper(neighbor, cell_dict, store_edge_list)
 
     @cell_layers_dict.setter
     def cell_layers_dict(self, graph_dict_layers):
         self._val_graph_dict_layers(graph_dict_layers)
-        self.start_nodes = [node for node in graph_dict_layers.keys() if type(node) in (nn_layers.InputLayer, nn_layers.StackedInputLayer, nn_layers.StateInputLayer)]
+
+        self.data_start_nodes = [node for node in graph_dict_layers.keys() if type(node) in (nn_layers.InputLayer, nn_layers.StackedInputLayer)]
+        self.state_start_nodes = [node for node in graph_dict_layers.keys() if type(node) == nn_layers.StateInputLayer]
+
         self._val_start_nodes()
+
+        self.data_node = self.data_start_nodes[0]
 
         self.dfs_joint_search_compilation(graph_dict_layers)
 
@@ -500,8 +505,8 @@ class JointedModel:
     def _val_start_nodes(self):
         """Validate the start nodes of the graph. Make sure there are start nodes and that they have input layers"""
         # make sure there are starting nodes
-        if len(self.start_nodes) == 0:
-            raise Exception("Network graph must have at least one starting node")
+        if len(self.data_start_nodes) == 0 or len(self.data_start_nodes) > 1:
+            raise Exception("Network graph must have exactly one data start node")
 
     # INITIALIZATION
 
@@ -535,46 +540,43 @@ class JointedModel:
         # perform back prop to obtain gradients and update
         self.back_prop(X_train, y_train, learning_rate, reg_strength)
 
-
     def forward_prop(self, X_train):
-        self.flow_forward_helper(X_train, True)
+        self.flow_forward_helper(X_train, forward_prop_flag=True)
 
-    def flow_forward_helper(self, X, forward_prop_flag):
+    def flow_forward_helper(self, X, forward_prop_flag=False, output_hold=None, generation_hold=None):
         #self.flow_forward(X_train, True)
         if type(self.data_node) == nn_layers.StackedInputLayer:
-            if len(self.data_node.cell_input_stack) == 0:
-                for timestep_data in X:
-                    #print(f"timestep data:{timestep_data} dimension:{timestep_data.shape}")
-                    self.data_node.store_cell_input(timestep_data)
-            else:
-                raise Exception("Clear data from the input stack")
-            
-            input_val = None 
-
+            self.data_node.load_data(X)
+            input_val = None
         elif type(self.data_node) == nn_layers.InputLayer:
             input_val = self.data_node.advance(X)
             # flow turned on in class internally when advance
 
         while self.data_node.flowing:
-            self.timestep += 1
-            input_val = self.flow_forward(input_val, forward_prop_flag=forward_prop_flag)
+            if forward_prop_flag:
+                self.timestep += 1
+            input_val = self.flow_forward(input_val=input_val, forward_prop_flag=forward_prop_flag, output_hold=output_hold, generation_hold=generation_hold)
         
-    def flow_forward(self, input_val, forward_prop_flag, generation=False):
+    def flow_forward(self, input_val=None, forward_prop_flag=False, output_hold=None, generation_hold=None):
         """General process for push data through the Jointed Model
         
         Args:
         """
         for start, target in self.cell_edge_search_history:
-            
+            # if generation_hold is not None:
+            #     print(start, target)
+            #     print(len(self.data_node.cell_input_stack))
             # turn off data flow if just one entry
             if type(self.data_node) == nn_layers.InputLayer:
                 self.data_node.flowing = False
+
+            # don't continue at the tail end and adding state input_layer
+            if type(start) == nn_layers.StateInputLayer and not self.data_node.flowing:
+                break
             
             # handles start
             if type(start) in [nn_layers.StateInputLayer, nn_layers.StackedInputLayer, nn_layers.SumLayer, nn_layers.Splitter]:
-                input_val = start.discharge_cell_output()
-
-            #print(f"input val {input_val}")
+                input_val = start.discharge_cell_output(forward_prop_flag)
 
             # advance or store the cell input
             if type(target) in [nn_layers.SumLayer, nn_layers.Splitter]:
@@ -585,18 +587,23 @@ class JointedModel:
                     target.store_cell_input(input_val)
             else:
                 if self._has_loss:
-                    last = target
-                    if target == self.loss_layer: 
-                        input_val = target.advance(input_val)
+                    if target == self.loss_layer:
+                        input_val = target.advance(input_val, forward_prop_flag)
+                        if output_hold is not None:
+                            output_hold.append(input_val)
                         # store and add to the data stack if data generation
-                        if generation:
-                            sampled = np.random.choice(range(len(input_val)), p=input_val)
-                            self.data_node.store_cell_input(sampled)
+                        if generation_hold is not None and not self.data_node.flowing:
+                            if self.loss_layer.loss_func == node_funcs.MSE:
+                                sampled = input_val
+                            elif self.loss_layer.loss_func == node_funcs.BCE:
+                                sampled = np.random.binomial(1, p=input_val)
+                            else:
+                                sampled = np.random.choice(range(input_val.shape[-1]), p=input_val)
+                            generation_hold.append(sampled)
                     else:
                         input_val = target.advance(input_val, forward_prop_flag)
                 else:    
                     input_val = target.advance(input_val, forward_prop_flag)
-                        
 
     def back_prop(self, X_train, y_train, learning_rate, reg_strength):
         
@@ -604,19 +611,22 @@ class JointedModel:
         loss_reached_flag = False
         while self.timestep > 0:
             self.timestep -= 1
-            for target, start in reversed(self.edge):
-                
+            for target, start in reversed(self.cell_edge_search_history):
+                #print(target, start)
+
                 if isinstance(start, nn_layers.Loss):
                     loss_reached_flag = True
-                    input_grad_to_loss = start.back_up(y_train)
+                    input_grad_to_loss = start.back_up(y_train[self.timestep])
 
                 if loss_reached_flag:
-                    if type(start) in [nn_layers.Splitter, nn_layers.StateInputLayer]:
+                    if type(start) in [nn_layers.Splitter, nn_layers.StateInputLayer, nn_layers.SumLayer]:
                         input_grad_to_loss = start.discharge_cell_input_grad()
+
+                    #print(input_grad_to_loss.shape)
 
                     if type(target) in [nn_layers.Splitter, nn_layers.StateInputLayer]:
                         target.store_cell_output_grad(input_grad_to_loss)
-                    else:
+                    elif type(target) != nn_layers.StackedInputLayer:
                         if target.learnable:
                             input_grad_to_loss = target.back_up(input_grad_to_loss, learning_rate=learning_rate, reg_strength=reg_strength)
                         else:
@@ -626,33 +636,33 @@ class JointedModel:
 
     # INFERENCE/EVALUATION
 
-    def single_generation(self, X, cutoff_length):
+    def generation(self, X, cutoff_length):
         """Generate outputs from a single example
         
         Args:
-            X (numpy.ndarray) : input single example to generate from
+            X (numpy.ndarray) : input example(s) to generate from
             cutoff_length (int) : max length of output sequence
 
         Returns:
             output_sequence (list) : generated sequence of the model
         """
-        # load in the first input
-        self.data_node.store_cell_input(X)
 
-        output_sequence = [X]
+        generation_sequence = [data for data in X]
 
-        while len(output_sequence) <= cutoff_length:
-            self.flow_forward(None, False, generation=True)
-            output_sequence.append(self.data_node.cell_input_stack[-1])
+        # append first input before taken out
+        self.data_node.load_data(X)
 
-        return output_sequence
+        while len(generation_sequence) < cutoff_length:
+            if not self.data_node.flowing:
+                self.data_node.store_cell_input(generation_sequence[-1])
+            self.flow_forward(generation_hold=generation_sequence)
+        return generation_sequence
 
     def predict_prob(self, X):
-        self.flow_forward_helper(X, False)
-        probs = self.loss_layer._output_stack
-        self.loss_layer._output_stack = []
+        output_hold = []
+        self.flow_forward_helper(X, output_hold=output_hold, forward_prop_flag=False)
         
-        return probs
+        return output_hold
 
     def predict_labels(self, X):
 
@@ -683,9 +693,6 @@ class JointedModel:
         # flatten y_pred and y_true to make compatible with past infrastructure
         y_true = y_true.flatten()
         y_pred = np.array(y_pred).flatten()
-
-        print(y_true)
-        print(y_pred)
 
         cost = self.loss_layer.get_cost(y_pred, y_true)
 

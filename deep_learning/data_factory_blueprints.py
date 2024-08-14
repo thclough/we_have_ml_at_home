@@ -377,7 +377,7 @@ class MiniBatchFactory:
     """Object to handle passing mini-batches to a model
 
     Attributes:
-        name_data_dict (dict) : {dataset_name : MiniBatchGenerator} dict
+        name_data_dict (dict) : {dataset_name : MiniBatchAssembly} dict
         train_key (str) : key string for the training mini-batch generator
         dev_key (str, default=None) : key string for the dev mini-batch generator
 
@@ -437,7 +437,6 @@ class MiniBatchFactory:
 
         if key_name not in self.name_data_dict.keys():
             raise Exception(f"{key_name} not in data split keys")
-
 
 class ChunkFactory(DataFactoryFoundation):
     """Object to handle passing chunks to a model
