@@ -673,7 +673,7 @@ class JointedModel:
     def predict_labels(self, X):
 
         # calculate activation values for each layer (includes predicted values)
-        final_activations = self.predict_prob(X)
+        final_activations = np.array(self.predict_prob(X))
 
         if isinstance(self.loss_layer.loss_func, node_funcs.BCE):
             predictions = final_activations > .5
@@ -697,8 +697,8 @@ class JointedModel:
         y_pred = self.predict_prob(X)
 
         # flatten y_pred and y_true to make compatible with past infrastructure
-        y_true = y_true.flatten()
-        y_pred = np.array(y_pred).swapaxes(0,1).flatten()
+        y_true = y_true.ravel()
+        y_pred = np.array(y_pred).swapaxes(0,1).ravel()
 
         cost = self.loss_layer.get_cost(y_pred, y_true)
 
