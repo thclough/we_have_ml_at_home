@@ -265,8 +265,15 @@ class StackedInputLayer(SameDimLayer):
         self.cell_input_stack.append(input_val)
 
     def load_data(self, data_array):
+        """Load data into input stack so it can be fetched for later use 
+        
+        Args:
+            data_array (numpy array) : data to load in in size (num_examples, timesteps, data_for_timestep) 
+        
+        """
         if len(self.cell_input_stack) == 0:
-            for timestep_data in data_array:
+            for t in range(data_array.shape[1]):
+                timestep_data = data_array[:,t,:]
                 #print(f"timestep data:{timestep_data} dimension:{timestep_data.shape}")
                 self.store_cell_input(timestep_data)
         else:

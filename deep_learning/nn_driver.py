@@ -3,8 +3,7 @@
 import time
 import numpy as np
 import joblib
-from deep_learning import node_funcs
-from deep_learning import learning_funcs
+from deep_learning import node_funcs, learning_funcs
 import matplotlib.pyplot as plt
 import deep_learning.data_factory_blueprints
 
@@ -55,7 +54,7 @@ class NNDriver:
         self.model._val_structure()
         
         # clear data for the first fit
-        self.model._has_fit = True
+        self.model.has_fit = True
         self._epoch = 0
 
         self._learning_scheduler = None
@@ -92,7 +91,7 @@ class NNDriver:
             verbose=True, 
             display=True):
         
-        if not self.model._has_fit:
+        if not self.model.has_fit:
             raise Exception("Please fit the model before refining")
 
         if not data_factory.train_generator._train_generator:
@@ -145,10 +144,10 @@ class NNDriver:
                 # end_gen = time.time()
                 # print(f"gen time {end_gen-start_gen}")
 
-                start_batch = time.time()
+                #start_batch = time.time()
                 self.model.batch_total_pass(X_train, y_train, self.learning_rate, self.reg_strength)
-                end_batch = time.time()
-                print(f"batch time: {end_batch-start_batch}")
+                #end_batch = time.time()
+                #print(f"batch time: {end_batch-start_batch}")
                 
                 if verbose:
                     if rng2.binomial(1, self._batch_prob):
@@ -269,7 +268,7 @@ class NNDriver:
 
     def generator_cost(self, eval_generator, reg_strength):
         """"Calculate loss on the eval chunk"""
-        
+
         if isinstance(eval_generator, deep_learning.data_factory_blueprints.MiniBatchAssembly):
             
             cost = self.model.cost(eval_generator.X, eval_generator.y, reg_strength)

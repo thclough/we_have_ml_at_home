@@ -9,6 +9,8 @@ import warnings
 from deep_learning.no_resources import OneHotArray
 from deep_learning.utils import JarOpener
 
+# TODO
+# Put transformations in the datafactory -> fix creating linked chunks for MiniBatches where you load in data directly
 
 class DataFactoryFoundation:
     """Parent class to share functionality between other generators. 
@@ -41,6 +43,11 @@ class DataFactoryFoundation:
 
         self._input_flag = False
         self._output_flag = False
+
+        self._sparse_dim = None
+        self._standardize = False
+        self.one_hot_width = None
+
 
     # setting data properties
     def set_data_input_props(self, input_path, data_selector=np.s_[:], skiprows=0, sparse_dim=None, standardize=False):
@@ -223,13 +230,13 @@ class MiniBatchAssembly(DataFactoryFoundation):
         super().set_data_input_props(input_path, data_selector, skiprows, sparse_dim, standardize)
 
         if self._input_flag and self._output_flag:
-            self._load_data()
+            self.load_file_data()
 
     def set_data_output_props(self, output_path, data_selector=np.s_[:], skiprows=0, one_hot_width=None):
         """see parent class, additionally loads data if input flag and output flag are True"""
         super().set_data_output_props(output_path, data_selector, skiprows, one_hot_width)
         if self._input_flag and self._output_flag:
-            self._load_data()
+            self.load_file_data()
 
     # Data generation
     def generate_input_data(self):
@@ -272,10 +279,18 @@ class MiniBatchAssembly(DataFactoryFoundation):
             data = data[:,data_selector]
 
         return data
-
-    def _load_data(self):
-        """Loads transformed data into memory for generation"""
+    
+    def load_file_data(self):
         X_data, y_data = self.generate_input_data(), self.generate_output_data()
+        self.load_data(X_data, y_data)
+
+    def load_data(self, X_data, y_data):
+        """Loads transformed data into memory for generation
+        
+        Args:
+            X_data (numpy array) : possible X/input data
+            y_data(numpy array) : possible y/output data
+        """
 
         # validate that the jars link up
         if len(X_data) != len(y_data):
@@ -284,7 +299,7 @@ class MiniBatchAssembly(DataFactoryFoundation):
         if self._sparse_dim:
             X_data = OneHotArray(shape=(len(X_data),self._sparse_dim),idx_array=X_data)
 
-        if self._one_hot_width:
+        if self.one_hot_width:
             y_data = self.one_hot_labels(y_data)
 
         if self._standardize:
@@ -310,7 +325,7 @@ class MiniBatchAssembly(DataFactoryFoundation):
             y_train_batch (numpy.ndarray) : (num_examples, ...) for y data
         """
         if not self._data_loaded:
-            self._load_data()
+            self.load_file_data()
 
         m = len(self.X)
 
@@ -323,7 +338,14 @@ class MiniBatchAssembly(DataFactoryFoundation):
 
             yield X_train_batch, y_train_batch
 
-    def create_linked_generator(self, input_path, output_path):
+    def create_linked_gen_data(self, X, y):
+        linked_chunk = MiniBatchAssembly(batch_size=self.batch_size, train_generator=False)
+        linked_chunk._linked_generator = True
+        linked_chunk.load_data(X,y)
+        return linked_chunk
+
+
+    def create_linked_generator(self, input, output):
         """Create a chunk linked to the instance train chunk, ex. a dev or test chunk
 
         Args:
@@ -333,15 +355,15 @@ class MiniBatchAssembly(DataFactoryFoundation):
         Returns:
             linked_chunk (PreDataGenerator) : linked chunk to the train chunk
         """
-        input_jar = JarOpener(input_path)
-        output_jar =  JarOpener(output_path)
+        input_jar = JarOpener(input)
+        output_jar = JarOpener(output)
         self.val_create_linked_generator(input_jar, output_jar)
 
         linked_chunk = MiniBatchAssembly(batch_size=self.batch_size, train_generator=False)
         linked_chunk._linked_generator = True
 
         # set data and properties
-        linked_chunk.set_data_input_props(input_path=input_path,
+        linked_chunk.set_data_input_props(input_path=input,
                                         data_selector=self._data_input_selector,
                                         skiprows=self._input_skiprows,
                                         sparse_dim=self._sparse_dim,
@@ -350,7 +372,7 @@ class MiniBatchAssembly(DataFactoryFoundation):
         if self.input_dim != linked_chunk.input_dim:
             raise Exception("Input data dimensions are not the same")
 
-        linked_chunk.set_data_output_props(output_path=output_path,
+        linked_chunk.set_data_output_props(output_path=output,
                                         data_selector=self._data_output_selector,
                                         skiprows=self._output_skiprows,
                                         one_hot_width=self.one_hot_width)

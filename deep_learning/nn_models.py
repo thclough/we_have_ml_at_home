@@ -9,9 +9,7 @@ import joblib
 
 # TODO
 
-# fix flow forward architecture
-# make sure the cell dict directed graph has no cycle somehow adn enforce full connection
-
+# make sure the cell dict directed graph has no cycle somehow ang enforce full connection
 
 # Create Joint models that are not just linear, multiple inputs/outputs allowed from each layer
 ## Make recurrent NN submodel check for RNN Web layers
@@ -31,6 +29,7 @@ import joblib
 ## Just unravel a models layers as nodes? makes for simpler algorithms
 ## Make loop functionality for recurrent networks (just evaluate last??)
 ## only if loop should require RNN webs used input laters
+## # fix flow forward architecture
 
 # REJECTED
 
@@ -42,7 +41,7 @@ class MonoModelPiece(Node):
         self.layers = []
         self.loss_layer = None
 
-        self._has_fit = False
+        self.has_fit = False
         self._has_dropout = False
         self.has_input = False
 
@@ -310,14 +309,25 @@ class JointedModel:
         self._has_loss = False
 
         # unravel models into layers
-        cell_graph_layers_dict, self._connected_models = self.unravel_graph_layers(cell_dict)
+        cell_graph_layers_dict, self.connected_models = self.unravel_graph_layers(cell_dict)
         #print(cell_graph_layers_dict)
         self.cell_layers_dict = cell_graph_layers_dict
 
-        self._has_fit = False
+        self.has_fit = False
         self._has_dropout = False
 
         self.timestep = 0
+
+    @property
+    def has_fit(self):
+        return self._has_fit
+    
+    @has_fit.setter
+    def has_fit(self, has_fit_cand):
+        for model in self.connected_models:
+            model.has_fite = has_fit_cand
+        
+        self._has_fit = has_fit_cand
 
     @property
     def cell_layers_dict(self):
@@ -369,13 +379,6 @@ class JointedModel:
         
         code in ### is not part of base dfs algorithm
         """
-
-        # if self._recurrent_flag:
-        #     recurrent_e = Exception("Model is recurrent, must use recurrent Webs")
-        #     if isinstance(start_node, nn_layers.Web):
-        #         if type(start_node) != nn_layers.RNN_Web:
-        #                 raise recurrent_e
-
             
         # add node to nodes list
         if start_node not in self.layers:
@@ -449,7 +452,7 @@ class JointedModel:
 
     @staticmethod
     def unravel_graph_layers(graph_dict):
-        """Replace models to their layers for processing. 
+        """Replace models by their layers for processing. 
         Keep track of connected models in graph dict
         
         Args:
@@ -457,7 +460,7 @@ class JointedModel:
 
         Returns:
             graph_layers_dict : {input_node -> [output_nodes]}, nodes are layers
-            connected_models : 
+            connected_models : models in the graph
         """
 
         graph_layers_dict = {}
@@ -501,12 +504,15 @@ class JointedModel:
             if type(layer) != nn_layers.Splitter and len(target_layers) > 1:
                 raise Exception("Layer cannot have more than one output node if it is not a splitter")
 
-
     def _val_start_nodes(self):
         """Validate the start nodes of the graph. Make sure there are start nodes and that they have input layers"""
         # make sure there are starting nodes
         if len(self.data_start_nodes) == 0 or len(self.data_start_nodes) > 1:
             raise Exception("Network graph must have exactly one data start node")
+
+    def _val_structure(self):
+        if not self._has_loss:
+            raise Exception(f"{self} needs an associated loss")
 
     # INITIALIZATION
 
@@ -616,7 +622,7 @@ class JointedModel:
 
                 if isinstance(start, nn_layers.Loss):
                     loss_reached_flag = True
-                    input_grad_to_loss = start.back_up(y_train[self.timestep])
+                    input_grad_to_loss = start.back_up(y_train[:,self.timestep,:])
 
                 if loss_reached_flag:
                     if type(start) in [nn_layers.Splitter, nn_layers.StateInputLayer, nn_layers.SumLayer]:
@@ -660,7 +666,7 @@ class JointedModel:
 
     def predict_prob(self, X):
         output_hold = []
-        self.flow_forward_helper(X, output_hold=output_hold, forward_prop_flag=False)
+        self.flow_forward_helper(X, forward_prop_flag=False, output_hold=output_hold)
         
         return output_hold
 
@@ -692,7 +698,7 @@ class JointedModel:
 
         # flatten y_pred and y_true to make compatible with past infrastructure
         y_true = y_true.flatten()
-        y_pred = np.array(y_pred).flatten()
+        y_pred = np.array(y_pred).swapaxes(0,1).flatten()
 
         cost = self.loss_layer.get_cost(y_pred, y_true)
 
@@ -731,7 +737,7 @@ class RecurrentNN:
 
         self._state_activation = state_activation
 
-        self._has_fit = False
+        self.has_fit = False
 
     # setters and getters
 
