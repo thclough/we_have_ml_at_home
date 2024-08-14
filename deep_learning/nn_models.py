@@ -707,6 +707,9 @@ class JointedModel:
             cost = cost + reg_strength * sum(np.sum(layer._weights ** 2) for layer in self.layers if isinstance(layer, nn_layers.Web))
 
         return cost
+    
+    def save_model(self, path):
+        joblib.dump(self, path)
 
 class RecurrentNN:
     """Simple recurrent many-to-many neural network

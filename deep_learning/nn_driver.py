@@ -194,7 +194,7 @@ class NNDriver:
 
             self._epoch += 1
             if model_path:
-                self.save_model(model_path)
+                self.model.save_model(model_path)
 
             if display and display_path:
                 fig.savefig(display_path)

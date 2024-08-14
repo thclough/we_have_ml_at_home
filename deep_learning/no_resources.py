@@ -528,7 +528,7 @@ class RowSparseArray:
         if isinstance(other, (float, int)):
             return self + other
         elif isinstance(other, np.ndarray):
-            print("hello")
+            print("hello, other is an ndarray")
         else:
             return NotImplemented
     
