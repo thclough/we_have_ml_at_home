@@ -361,8 +361,8 @@ class NNDriver:
         if there is a new label then add to labels set
         
         Args:
-            X_eval (numpy.nadarray) : chunk/batch of examples to be evaluated
-            y_eval (numpy.ndarray) : chunk/batch of labels for X_eval
+            X_eval (numpy array) : chunk/batch of examples to be evaluated
+            y_eval (numpy array) : chunk/batch of labels for X_eval
             labels (set) : set of unique labels seen in the class_matrix_dict
             class_matrix_dict (dict) : (true_label, pred_label) count dictionary
         """
@@ -371,7 +371,7 @@ class NNDriver:
         if not isinstance(self.model.loss_layer.loss_func, node_funcs.BCE):
             y_eval = np.argmax(y_eval, axis=1)
 
-        for true_label, pred_label in zip(y_eval, y_pred_eval):
+        for true_label, pred_label in zip(y_eval.ravel(), y_pred_eval.ravel()):
             true_label = int(true_label)
             pred_label = int(pred_label)
 

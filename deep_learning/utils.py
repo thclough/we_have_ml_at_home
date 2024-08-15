@@ -3,6 +3,7 @@ import os
 import traceback
 import regex as re
 from deep_learning import nn_layers
+import numpy as np
 
 def pos_int(cand, var_name):
     """Checks if the passed value is a positive integer
@@ -171,3 +172,20 @@ def graph_dict_to_edge_list(graph_dict):
             edge_list.append((start_node, end_node))
 
     return edge_list
+
+def one_hot_labels(y_data, one_hot_width):
+    """One hot labels from y_data
+
+    Args:
+        y_data (numpy array)
+        one_hot_width (int) : number of one hot categories
+
+    Returns:
+        one_hot_labels
+
+    """
+
+    one_hot_labels = np.zeros((y_data.size, one_hot_width))
+    one_hot_labels[np.arange(y_data.size), y_data.astype(int).flatten()] = 1
+
+    return one_hot_labels

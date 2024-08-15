@@ -128,7 +128,6 @@ class MonoModelPiece(Node):
         input = X_train
         for layer in self.layers:
             input = layer.advance(input, forward_prop_flag=True)
-
         return input
     # BACK ROUTINE
 
@@ -668,12 +667,12 @@ class JointedModel:
         output_hold = []
         self.flow_forward_helper(X, forward_prop_flag=False, output_hold=output_hold)
         
-        return output_hold
+        return np.array(output_hold).swapaxes(0,1)
 
     def predict_labels(self, X):
 
         # calculate activation values for each layer (includes predicted values)
-        final_activations = np.array(self.predict_prob(X))
+        final_activations = self.predict_prob(X)
 
         if isinstance(self.loss_layer.loss_func, node_funcs.BCE):
             predictions = final_activations > .5
@@ -698,7 +697,7 @@ class JointedModel:
 
         # flatten y_pred and y_true to make compatible with past infrastructure
         y_true = y_true.ravel()
-        y_pred = np.array(y_pred).swapaxes(0,1).ravel()
+        y_pred = y_pred.ravel()
 
         cost = self.loss_layer.get_cost(y_pred, y_true)
 

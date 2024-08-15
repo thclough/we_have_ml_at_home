@@ -6,8 +6,7 @@ import numpy as np
 import queue
 import threading
 import warnings
-from deep_learning.no_resources import OneHotArray
-from deep_learning.utils import JarOpener
+from deep_learning import utils, no_resources
 
 # TODO
 # Put transformations in the datafactory -> fix creating linked chunks for MiniBatches where you load in data directly
@@ -25,16 +24,14 @@ class DataFactoryFoundation:
         _output_flag (bool) : if output props have been set
 
         input_path (str) : path to the input file
-        _input_jar (JarOpener) : jar opener for the input path
+        _input_jar (utils.JarOpener) : jar opener for the input path
         _data_input_selector (numpy.IndexExpression) : 1D index expression to select certain columns
-        _sparse_dim (int) : dimensions of the sparse vectors
         _input_skiprows (int) : number of rows to skip in input file before starting to read
         _standardize (bool) : whether or not to standardize the input data
 
         output_path (str) : path to the output file
-        _output_jar (JarOpener) : jar opener for the output path
+        _output_jar (utils.JarOpener) : jar opener for the output path
         _data_output_selector (numpy.IndexExpression) : 1D index expression to select certain columns
-        _one_hot_width (list) : number of categories for one hot encoding
         _output_skiprows (int) : number of rows to skip in the output file before starting to read
     """
 
@@ -44,39 +41,39 @@ class DataFactoryFoundation:
         self._input_flag = False
         self._output_flag = False
 
-        self._sparse_dim = None
         self._standardize = False
-        self.one_hot_width = None
 
 
     # setting data properties
-    def set_data_input_props(self, input_path, data_selector=np.s_[:], skiprows=0, sparse_dim=None, standardize=False):
+    def set_data_input_props(self, input_path, data_selector=np.s_[:], skiprows=0, standardize=False, input_transform=None):
         """Set the data/input properties for the chunk object
 
         Args:
             input_path (str) : path for input data
             data_selector (IndexExpression, default=np.s_[:]) : 1D index expression to select certain columns, if none specified will select all columns
             skiprows (int, default=0) : number of rows to skip
-            sparse_dim (int, default=None) : dimensions of the sparse vectors, if applicable
             standardize (bool, default=False) : whether or not to standardize data
+            input_transform (function, default=None) : transform function for the input data
         """
         # mark input has been set
         self._input_flag=True
 
         # get the opener function
         self.input_path = input_path
-        self._input_jar = JarOpener(input_path)
+        self._input_jar = utils.JarOpener(input_path)
 
         # select all columns if no data columns
         self._data_input_selector = data_selector
 
-        self._sparse_dim = sparse_dim
-
         self._input_skiprows = skiprows
 
+        self.input_transform = input_transform
+
+        ###
         self.set_input_dim()
 
         self._standardize = standardize
+        ###
 
         self._set_num_data_lines()
         self._num_chunks = self._num_data_lines / self.batch_size
@@ -90,28 +87,29 @@ class DataFactoryFoundation:
 
         self._num_data_lines = data_lines
 
-    def set_data_output_props(self, output_path, data_selector=np.s_[:], skiprows=0, one_hot_width=None):
+    def set_data_output_props(self, output_path, data_selector=np.s_[:], skiprows=0, output_transform=None):
         """Set the label properties for the chunk object
 
         Args:
             output_path (str) : path for output data
             data_selector (IndexExpression, default=np.s_[:]) : 1D index expression to select certain columns, if none specified will select all columns
             skiprows (int, default=0) : number of rows to skip
-            one_hot_width (list, default=None) : number of categories for one hot encoding
+            output_transform (function, default=None) : transform function for the input data
         """
 
         self._output_flag = True
 
         # get the opener function
         self.output_path = output_path
-        self._output_jar = JarOpener(output_path)
+        self._output_jar = utils.JarOpener(output_path)
 
         self._data_output_selector = data_selector
 
-        # handle one hot encoding
-        self.one_hot_width = one_hot_width
-
         self._output_skiprows = skiprows
+
+        self.output_transform = output_transform
+
+        # handle one hot encoding
 
         self.set_output_dim()
 
@@ -129,11 +127,7 @@ class DataFactoryFoundation:
 
     def set_input_dim(self):
         """Set the dimension of the input data by peeking inside the input data file"""
-
-        if self._sparse_dim:
-            dim = self._sparse_dim
-        else:
-            dim = self.get_selector_dim(self._input_jar, self._data_input_selector)
+        dim = self.get_selector_dim(self._input_jar, self._data_input_selector, self._input_skiprows, self.input_transform)
 
         self._input_dim = dim
 
@@ -147,60 +141,26 @@ class DataFactoryFoundation:
 
     def set_output_dim(self):
         """Set the output dimension (after one hot encoding)"""
-        if self.one_hot_width:
-            dim = self.one_hot_width
-        else:
-            dim = self.get_selector_dim(self._output_jar, self._data_output_selector)
+        dim = self.get_selector_dim(self._output_jar, self._data_output_selector, self._output_skiprows, self.output_transform)
 
         self._output_dim = dim
 
     @staticmethod
-    def get_selector_dim(jar_opener, data_selector):
+    def get_selector_dim(jar_opener, data_selector, skip_lines, transform_func):
         """Return the dimension of selected data within file"""
         with jar_opener as file:
             reader = csv.reader(file)
-            line = np.array(next(reader))
-            selector_dim = len(line[data_selector])
+            for _ in range(skip_lines):
+                next(reader)
+            line = np.array(next(reader), dtype=float)[data_selector]
+            if transform_func is not None:
+                line = transform_func(line)
+                selector_dim = line.shape[-1]
+            else:
+                selector_dim = len(line)
+            print(selector_dim)
 
         return selector_dim
-
-    @property
-    def one_hot_width(self):
-        return self._one_hot_width
-
-    @one_hot_width.setter
-    def one_hot_width(self, one_hot_width_cand):
-        """Validate one hot encoding for set_data_output_props and set if appropriate
-
-        Args:
-            one_hot_width_cand (int) : candidate for one_hot_width
-        """
-        if one_hot_width_cand is None:
-            self._one_hot_width = one_hot_width_cand
-        elif isinstance(one_hot_width_cand, int):
-            dim = self.get_selector_dim(self._output_jar, self._data_output_selector)
-
-            if dim == 1:
-                self._one_hot_width = one_hot_width_cand
-            else:
-                raise AttributeError("Cannot set one_hot_width and one hot encode if dimensions of raw output is not 1")
-        else:
-            return AttributeError(f"one_hot_width must be an integer or None, value of {one_hot_width_cand} given")
-
-    def one_hot_labels(self, y_data):
-        """One hot labels from y_data
-
-        Args:
-            y_data (numpy array)
-
-        Returns:
-            one_hot_labels
-
-        """
-        one_hot_labels = np.zeros((y_data.size, self._one_hot_width))
-        one_hot_labels[np.arange(y_data.size), y_data.astype(int).flatten()] = 1
-
-        return one_hot_labels
 
 class MiniBatchAssembly(DataFactoryFoundation):
     """Generator to generate mini batches. loads data into memory before generating the data
@@ -225,38 +185,39 @@ class MiniBatchAssembly(DataFactoryFoundation):
 
     # property setters
 
-    def set_data_input_props(self, input_path, data_selector=np.s_[:], skiprows=0, sparse_dim=None, standardize=False):
+    def set_data_input_props(self, input_path, data_selector=np.s_[:], skiprows=0, standardize=False, input_transform=None):
         """see parent class, additionally loads data if input flag and output flag are True"""
-        super().set_data_input_props(input_path, data_selector, skiprows, sparse_dim, standardize)
+        super().set_data_input_props(input_path, data_selector, skiprows, standardize, input_transform)
 
         if self._input_flag and self._output_flag:
             self.load_file_data()
 
-    def set_data_output_props(self, output_path, data_selector=np.s_[:], skiprows=0, one_hot_width=None):
+    def set_data_output_props(self, output_path, data_selector=np.s_[:], skiprows=0, output_transform=None):
         """see parent class, additionally loads data if input flag and output flag are True"""
-        super().set_data_output_props(output_path, data_selector, skiprows, one_hot_width)
+        super().set_data_output_props(output_path, data_selector, skiprows, output_transform)
         if self._input_flag and self._output_flag:
             self.load_file_data()
 
     # Data generation
     def generate_input_data(self):
         """Generate X_data input"""
-        return self.generate_raw_jar_data(self._input_flag, self._input_jar, self._input_skiprows, self._data_input_selector)
+        return self.generate_raw_jar_data(self._input_flag, self._input_jar, self._input_skiprows, self._data_input_selector, 0, self.input_transform)
 
     def generate_output_data(self):
         """Generate X_data input"""
-        return self.generate_raw_jar_data(self._output_flag, self._output_jar, self._output_skiprows, self._data_output_selector, ndmin=2)
+        return self.generate_raw_jar_data(self._output_flag, self._output_jar, self._output_skiprows, self._data_output_selector, 2, self.output_transform)
 
-    def generate_raw_jar_data(self, set_flag, jar_opener, skiprows, data_selector, ndmin=0):
+    def generate_raw_jar_data(self, set_flag, jar_opener, skiprows, data_selector, ndmin=0, transform_func=None):
         """Generate raw jar data without transforming the data
 
         Args:
             set_flag (bool) : whether or not properties for input/output have been set
-            jar_opener (JarOpener) : jar opener of file to open
+            jar_opener (utils.JarOpener) : jar opener of file to open
             skiprows (int) : number or rows to skip
             data_selector (IndexExpression) : numpy index expression to select data from generated raw data
             ndmin (int, default=0) : The returned array will have at least ndmin dimensions. Otherwise mono-dimensional axes will be squeezed. 
                 Legal values: 0 (default), 1 or 2.
+            transform_func (function) : Function to transform the data in a certain way
 
         Yields:
             data (numpy array) : data from jar opener of set chunk size
@@ -278,6 +239,9 @@ class MiniBatchAssembly(DataFactoryFoundation):
 
             data = data[:,data_selector]
 
+            if transform_func is not None:
+                data = transform_func(data)
+
         return data
     
     def load_file_data(self):
@@ -296,15 +260,7 @@ class MiniBatchAssembly(DataFactoryFoundation):
         if len(X_data) != len(y_data):
             raise Exception("Input file and output file are not the same length")
 
-        if self._sparse_dim:
-            X_data = OneHotArray(shape=(len(X_data),self._sparse_dim),idx_array=X_data)
-
-        if self.one_hot_width:
-            y_data = self.one_hot_labels(y_data)
-
         if self._standardize:
-            if self._sparse_dim is not None:
-                raise Exception("Generator does not support standardization for sparse dim")
             if self._train_generator:
                 self._train_mean = X_data.mean(axis=0)
                 self._train_std = X_data.std(axis=0)
@@ -355,8 +311,8 @@ class MiniBatchAssembly(DataFactoryFoundation):
         Returns:
             linked_chunk (PreDataGenerator) : linked chunk to the train chunk
         """
-        input_jar = JarOpener(input)
-        output_jar = JarOpener(output)
+        input_jar = utils.JarOpener(input)
+        output_jar = utils.JarOpener(output)
         self.val_create_linked_generator(input_jar, output_jar)
 
         linked_chunk = MiniBatchAssembly(batch_size=self.batch_size, train_generator=False)
@@ -366,8 +322,8 @@ class MiniBatchAssembly(DataFactoryFoundation):
         linked_chunk.set_data_input_props(input_path=input,
                                         data_selector=self._data_input_selector,
                                         skiprows=self._input_skiprows,
-                                        sparse_dim=self._sparse_dim,
-                                        standardize=self._standardize)
+                                        standardize=self._standardize,
+                                        input_transform=self.input_transform)
 
         if self.input_dim != linked_chunk.input_dim:
             raise Exception("Input data dimensions are not the same")
@@ -375,7 +331,7 @@ class MiniBatchAssembly(DataFactoryFoundation):
         linked_chunk.set_data_output_props(output_path=output,
                                         data_selector=self._data_output_selector,
                                         skiprows=self._output_skiprows,
-                                        one_hot_width=self.one_hot_width)
+                                        output_transform=self.output_transform)
         if self.output_dim != linked_chunk.output_dim:
             raise Exception("Output data dimensions are not the same")
 
@@ -489,14 +445,12 @@ class ChunkFactory(DataFactoryFoundation):
 
         self.seed = seed
 
-    def set_data_input_props(self, input_path, data_selector=np.s_[:], skiprows=0, sparse_dim=None, standardize=False):
+    def set_data_input_props(self, input_path, data_selector=np.s_[:], skiprows=0, standardize=False, input_transform=None):
 
-        super().set_data_input_props(input_path, data_selector, skiprows, sparse_dim, standardize)
+        super().set_data_input_props(input_path, data_selector, skiprows, standardize, input_transform=input_transform)
         # calculate mean and standard deviation of training data if standardizing
 
         if self._standardize:
-            if self._sparse_dim is not None:
-                raise Exception("Generator does not support standardization for sparse dim")
             self._set_training_data_mean()
             self._set_training_data_std()
 
@@ -608,18 +562,18 @@ class ChunkFactory(DataFactoryFoundation):
 
     def generate_input_data(self):
         """Generate X_data input"""
-        return self.generate_raw_jar_data(self._input_flag, self._input_jar, self._input_skiprows, self._data_input_selector)
+        return self.generate_raw_jar_data(self._input_flag, self._input_jar, self._input_skiprows, self._data_input_selector, 0, self.input_transform)
 
     def generate_output_data(self):
         """Generate X_data input"""
-        return self.generate_raw_jar_data(self._output_flag, self._output_jar, self._output_skiprows, self._data_output_selector, ndmin=2)
+        return self.generate_raw_jar_data(self._output_flag, self._output_jar, self._output_skiprows, self._data_output_selector, 2, self.output_transform)
 
-    def generate_raw_jar_data(self, set_flag, jar_opener, skiprows, data_selector, ndmin=0):
-        """Generate raw jar data without transforming into OneHotArray for input or one hot vector for output data
+    def generate_raw_jar_data(self, set_flag, jar_opener, skiprows, data_selector, ndmin, transform_func):
+        """Generate raw jar data without transforming into no_resources.OneHotArray for input or one hot vector for output data
 
         Args:
             set_flag (bool) : whether or not properties for input/output have been set
-            jar_opener (JarOpener) : jar opener of file to open
+            jar_opener (utils.JarOpener) : jar opener of file to open
             skiprows (int) : number or rows to skip
             data_selector (IndexExpression) : numpy index expression to select data from generated raw data
             ndmin (int, default=0) : The returned array will have at least ndmin dimensions. Otherwise mono-dimensional axes will be squeezed. 
@@ -653,6 +607,9 @@ class ChunkFactory(DataFactoryFoundation):
                     break
 
                 data = data[:,data_selector]
+
+                if transform_func is not None:
+                    data = transform_func(data)
 
                 yield data
 
@@ -688,12 +645,6 @@ class ChunkFactory(DataFactoryFoundation):
 
             if len(X_data) != len(y_data):
                 raise Exception("Input file and output file are not the same length")
-
-            if self._sparse_dim:
-                X_data = OneHotArray(shape=(len(X_data),self._sparse_dim),idx_array=X_data)
-
-            if self._one_hot_width:
-                y_data = super().one_hot_labels(y_data)
 
             if self._standardize:
                 #X_data = (X_data - self._train_mean) / self._train_std

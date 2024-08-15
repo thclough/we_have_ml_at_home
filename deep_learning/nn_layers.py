@@ -85,7 +85,8 @@ class Web(Node):
 
     def back_up(self, output_grad_to_loss, learning_rate, reg_strength, update_params_flag=True):
         
-        #print(output_grad_to_loss.shape)
+        # print(f"output_grad_to_loss {output_grad_to_loss.shape}")
+        # print(f"self._weights {self._weights.shape}")
 
         #print(output_grad_to_loss)
         if self.calc_input_grad_flag:

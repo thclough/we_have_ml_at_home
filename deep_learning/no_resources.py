@@ -6,9 +6,6 @@ import re
 import time
 import random
 from contextlib import ExitStack
-
-from deep_learning.utils import JarOpener
-
 from deep_learning import utils
 
 
@@ -121,7 +118,7 @@ def chop_up_csv(source_path, split_dict, header=True, seed=100):
     ordered_names = [item[0] for item in ordered]
     ordered_probs = [item[1] for item in ordered]
 
-    opener = JarOpener(source_path)
+    opener = utils.JarOpener(source_path)
     target_dir = utils.get_file_dir(source_path)
 
     with ExitStack() as stack:
@@ -177,7 +174,10 @@ class OneHotArray:
         # instantiate cand_idx_rel dict to hold sparse array
         cand_idx_rel = {}
 
+        
         if isinstance(idx_array, (np.ndarray, list)) and oha_dict == None:
+            if idx_array.ndim == 1:
+                idx_array = idx_array.reshape(1,-1)
             if self.shape[0] < len(idx_array):
                 raise Exception("Number of row vectors in array must be greater than amount given")
             for row_idx, col_idxs in enumerate(idx_array):
