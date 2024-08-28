@@ -246,7 +246,6 @@ class CE:
     @staticmethod
     def forward(y_pred, y_true):
         """y_true is a sparse array"""
-
         y_pred = np.clip(y_pred, 1e-15, 1 - 1e-15)
         return -np.sum(y_true * np.log(y_pred), axis=1)
     

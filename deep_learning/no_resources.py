@@ -8,24 +8,27 @@ import random
 from contextlib import ExitStack
 from deep_learning import utils
 
-
 #TODO
 
+## Merge OneHotTensor functionality with one hot array
+    ## implement intelligent sizing in the one hot array
+
 ## option for generating ints or floats (maybe in set data input and output)
+
 ## chunk sizes mean batch sizes for chunk nn, but batch_size * train_prop = batch size for super chunk
-## oha dict allows for double indexing
+
+## oha dict allows for double indexing (meaning can add 1s if given multiple of the same indexes)
 ## __iter__ and __next__ for generate
 ## apply one hot encoding for y_data just to OHA
-## file extensions for jar should not come from name, but from actual file attributes
+
 
 
 # COMPLETED
 ## automatically create jar openers for setting input
+## file extensions for jar should not come from name, but from actual file attributes  (see utils)
 
 
 # REJECTED
-
-
 
 ## can put one hot labels in txt
 
@@ -151,6 +154,176 @@ def _val_chop_up_csv(source_path, split_dict):
     if val_array.sum() != 1:
         raise Exception("Probs must sum to 1")
 
+class OneHotTensor:
+    """Multiple one hot arrays stacked in sequential order
+    
+    Creating so can comply with (num_examples, time_sequence, ...) standard shape of data factories
+    and to increase efficiency in RNNs (like pad_packed_sequence) because no unnecessary 0 calculations will have to execute
+    
+    """
+
+    def __init__(self, oha_list, uniform_shape_flag=True):
+        """
+        Args:
+            uniform_shape (bool, default=True) : enforce shape set to False means arrays can have different shapes,
+                shape of the tensor will be the largest dims"""
+        self.ndim = 3
+
+        # shape standard set by first oha that rest of ohas mus align to
+        shape_standard = None
+        self.uniform_shape_flag = uniform_shape_flag
+        if self.uniform_shape_flag:
+            for oha in oha_list:
+                if not isinstance(oha, OneHotArray):
+                    raise TypeError("list must be list of ohas")
+                if shape_standard is None:
+                    shape_standard = oha.shape
+                else:
+                    if oha.shape != shape_standard:
+                        raise Exception("All one hot arrays must have the same shape")
+        
+            self.shape = (len(oha_list),) + shape_standard
+        else:
+            max_rows = 0
+            max_cols = 0
+            for oha in oha_list:
+                num_rows, num_cols = oha.shape
+                if num_rows > max_rows:
+                    max_rows = num_rows
+                if num_cols > max_cols:
+                    max_cols = num_cols
+
+            self.shape = (len(oha_list), max_rows, max_cols)
+        self.oha_list = oha_list
+
+    def __getitem__(self, key):
+        """Defining getitem to duck type with numpy arrays for 0th axis slicing and indexing"""
+        # define dimensions and n_rows placeholder
+        
+        # print(f"key {key}")
+        # print(f"type key: {type(key)}")
+        gathered = []
+        if isinstance(key, int):
+            self.add_int_key(key, gathered)
+            if len(gathered) == 1:
+                return gathered[0]
+        elif isinstance(key, slice):
+            self.add_slice_key(key, gathered)
+            if len(gathered) == 1:
+                return gathered[0]
+        elif isinstance(key, np.ndarray):
+            for elem in key:
+                if isinstance(elem,tuple([int] + np.sctypes["int"])):
+                    self.add_int_key(elem, gathered)
+                else:
+                    raise NotImplementedError
+        elif isinstance(key, tuple):
+            # gather the correct ohas and then perform getitem on them individually
+            if isinstance(key[0], int):
+                oha = self.oha_list[key[0]]
+                return oha[key[1:]]
+            else:
+                temp_list = self.oha_list[key[0]]
+
+            if isinstance(key[1], int):
+                idx_rel = {}
+
+                max_depth = 0
+                for idx, oha in enumerate(temp_list):
+                    if key[1] in oha.idx_rel.keys():
+                        idx_rel[idx] = oha.idx_rel[key[1]]
+                        if idx > max_depth:
+                            max_depth=idx
+
+                return OneHotArray(shape=(max_depth+1, self.shape[2]), oha_dict=idx_rel)[key[2]]
+            else:
+                temp_list = [oha[key[1]] for oha in temp_list]
+
+            if isinstance(key[2], int):
+                n_rows, n_cols = temp_list[0].shape[0],len(temp_list)
+                idx_rel = {}
+                for oha in temp_list:
+                    for key, idx_list in oha.idx_rel.values():
+                        idx_rel[key] = idx_rel.get(key, []) + idx_list
+
+                return OneHotArray(shape=(n_rows, n_cols), oha_dict=idx_rel)
+            else:
+                gathered = [oha[key[2]] for oha in temp_list]
+
+        else:
+            raise SyntaxError
+        
+        return OneHotTensor(gathered, uniform_shape_flag=self.uniform_shape_flag)
+
+    def add_int_key(self, int_idx, gathered):
+        """Get integer index value 
+        Args:
+            int_idx (int) : integer row idx of the oha
+            gathered (dict) : current gathered values of the indexed oha
+        """
+        self.validate_idx(int_idx)
+        if int_idx < 0:
+            int_idx = self.convert_neg_idx(int_idx)
+
+        gathered.append(self.oha_list[int_idx])
+
+    def convert_neg_idx(self, idx, axis=0):
+        """Converts negative idxs for __getitem__ to positive idx
+        Args:
+            idx (int) : negative int to convert to positive
+        """
+        return self.shape[axis] + idx
+    
+    def validate_idx(self, idx, axis=0):
+        """See if the idx is out of bounds or not
+        
+        Args:
+            idx (int) :  index to validate
+            axis (int, default=0)
+        """
+        indexed_rows = self.shape[axis]
+        if idx < -indexed_rows or idx > indexed_rows-1:
+            raise IndexError(f"Given index {idx} in axis {axis} does not exist")
+        
+    def add_slice_key(self, slice_obj, gathered):
+        """Add corresponding valid index values in slice to gathered
+        
+        Args:
+            slice (slice) : key slice object
+            gathered (dict) : current gathered values of the indexed oha
+        
+        """
+        start = 0 if slice_obj.start is None else slice_obj.start
+
+        stop = self.shape[0] if slice_obj.stop is None else slice_obj.stop
+        
+        step = 1 if slice_obj.step is None else slice_obj.step
+ 
+        for idx in range(start, stop, step):
+            self.add_int_key(idx, gathered)
+
+    def strip_flatten_to_array(self):
+        """Convert to 2d array where there are no zero rows, one hot arrays are concatenated on top of each other
+        Often used when OneHotTensor represents on"""
+
+        num_filled_rows = 0
+
+        for oha in self.oha_list:
+            num_filled_rows += len(oha.idx_rel)
+
+        strip_flattened_array = np.zeros((num_filled_rows, self.shape[-1]))
+
+        row_num = 0
+        for oha in self.oha_list:
+            for row, one_locations in oha.idx_rel.items():
+                for one_location in one_locations:
+                    strip_flattened_array[row_num, one_location] = 1
+                row_num+=1
+
+        return strip_flattened_array
+    
+    def __len__(self):
+        return self.shape[0]
 
 class OneHotArray:
     """Sparse array for maximizing storage efficiency
@@ -166,7 +339,6 @@ class OneHotArray:
                 integers in the array correspond to column indices of the 1 entries, 
                 only positive integers allowed, except for -1 which counts as null space
             oha_dict (dict) : {row:col_idxs} dict
-
         """
         self.shape = shape
         self.ndim = 2
@@ -174,18 +346,19 @@ class OneHotArray:
         # instantiate cand_idx_rel dict to hold sparse array
         cand_idx_rel = {}
 
-        
-        if isinstance(idx_array, (np.ndarray, list)) and oha_dict == None:
-            if idx_array.ndim == 1:
-                idx_array = idx_array.reshape(1,-1)
+        # changing so can accommodate multiple dimensions
+        if idx_array is not None and oha_dict == None:
+            if type(idx_array) == np.ndarray: 
+                if idx_array.ndim == 1:
+                    idx_array = idx_array.reshape(1,-1)
             if self.shape[0] < len(idx_array):
                 raise Exception("Number of row vectors in array must be greater than amount given")
             for row_idx, col_idxs in enumerate(idx_array):
                 filtered_col_idxs = self.filter_col_idxs(col_idxs)
-                cand_idx_rel[row_idx] = filtered_col_idxs
+                if filtered_col_idxs:
+                    cand_idx_rel[row_idx] = filtered_col_idxs
 
-        elif oha_dict != None and idx_array == None:
-            
+        elif oha_dict != None and idx_array is None:
             if oha_dict.keys():
                 if self.shape[0] < max(oha_dict.keys()) + 1:
                     raise Exception("Number of row vectors in array must be greater than max row index plus one")
@@ -208,8 +381,10 @@ class OneHotArray:
         Returns: 
             filtered_col_idxs (list): valid col idxs for a given row
         """
+
         filtered_col_idxs = []
         for col_idx in raw_col_idxs:
+            # both evaluate to false for np.nan's
             if col_idx >= 0:
                 self.validate_idx(col_idx, axis=1)
                 filtered_col_idxs.append(int(col_idx))
@@ -229,7 +404,7 @@ class OneHotArray:
         return array
     
     def __matmul__(self, other):
-        
+
         # validation
         if other.ndim != 2:
             raise Exception("Dimensions of composite transformations must be 2")
@@ -245,7 +420,8 @@ class OneHotArray:
                 product = np.zeros((len(self.idx_rel), other.shape[1]))
 
                 counter = 0
-                for row_idx, col_idxs in self.idx_rel.items():
+                for row_idx in sorted(self.idx_rel.keys()):
+                    col_idxs = self.idx_rel[row_idx]
                     row_idxs.append(row_idx)
                     product[counter] = other[col_idxs].sum(axis=0)
                     counter+=1
@@ -266,43 +442,18 @@ class OneHotArray:
         else:
             raise Exception("OneHotArray can only matrix multiply with numpy array or another OneHotArray")
 
-    def __rmatmul__(self, other):
-        # (b x s) (s x next layer) will become O(b) 
-        # validation
-        if other.ndim != 2:
-            raise Exception("Dimensions of composite transformations must be 2")
-        
-        if isinstance(other, np.ndarray): # dense-sparse multiplication
-            outside_dims = (other.shape[0], self.shape[1])
-
-            product = np.zeros(outside_dims)
-            
-            if other.shape[1] != self.num_vectors:
-                raise Exception("Inner dimensions must match")
-            
-            transposed = self.T
-
-            for row_idx, col_idxs in transposed.idx_rel:
-                product[:,row_idx] = other[:,col_idxs]
-
-            return product
-        elif isinstance(other, OneHotArray):
-            pass
-        else:
-            raise Exception("OneHotArray can only matrix multiply with numpy array")
-
     def __getitem__(self, key):
         """Defining getitem to duck type with numpy arrays for 0th axis slicing and indexing"""
         # define dimensions and n_rows placeholder
         n_rows = 0
         n_cols = self.shape[1]
-        
+
         gathered = {}
         if isinstance(key, int):
             n_rows = self.add_int_key(key, gathered, n_rows)
         elif isinstance(key, slice):
             n_rows = self.add_slice_key(key, gathered, n_rows)
-        elif isinstance(key, (list, np.ndarray)):
+        elif isinstance(key, (list, np.ndarray, tuple)):
             for sub_key in key:
                 if isinstance(sub_key, tuple([int] + np.sctypes["int"])):
                     n_rows = self.add_int_key(sub_key, gathered, n_rows)
@@ -366,11 +517,13 @@ class OneHotArray:
             n_rows (int) : counter for amount of rows 
         
         """
-        if slice_obj.step is None:
-            step = 1
-        else:
-            step = slice_obj.step
-        for idx in range(slice_obj.start, slice_obj.stop, step):
+        start = 0 if slice_obj.start is None else slice_obj.start
+
+        stop = self.shape[0] if slice_obj.stop is None else slice_obj.stop
+        
+        step = 1 if slice_obj.step is None else slice_obj.step
+ 
+        for idx in range(start, stop, step):
             n_rows = self.add_int_key(idx, gathered, n_rows)
 
         return n_rows
@@ -420,6 +573,9 @@ class OneHotArray:
 
     def __str__(self):
         return str(self.idx_rel)
+    
+    def trim_tail(self):
+        self.shape[0] = max(self.idx_rel)
 
 class RowSparseArray:
     """Row vectors assumed to be dense, column vectors assumed to be sparse, many zero vector rows"""
@@ -496,9 +652,8 @@ class RowSparseArray:
         
 
     def __array_ufunc__(self, ufunc, method, *inputs, **kwargs):
-
         if ufunc != np.add:
-            raise Exception("Binary operation not supported")
+            raise NotImplementedError("Binary operation not supported")
         
         if ufunc == np.add:
             item1 = inputs[0]
@@ -514,7 +669,7 @@ class RowSparseArray:
                                   dense_row_array=self._dense_row_array, 
                                   total_array_rows=self.shape[0],
                                   offset=new_offset)
-        if isinstance(other, np.ndarray):
+        elif isinstance(other, np.ndarray):
             other = np.copy(other)
             for row_idx, row_vec in zip(self._row_idx_vector, self._dense_row_array):
                 other[row_idx] = other[row_idx] + row_vec
@@ -532,8 +687,84 @@ class RowSparseArray:
         else:
             return NotImplemented
     
+    def __iadd__(self, other):
+        if isinstance(other, (float, int)):
+            self._offset -= other
+        elif isinstance(other, RowSparseArray):
+            assert self.shape == other.shape, "Operands must have the same shape"
+
+            # print(f"self vector {self._row_idx_vector}")
+            # print(f"other vector {other._row_idx_vector}")
+
+            self_pointer = 0
+            other_pointer = 0
+            new_row_idx_vector = []
+            new_dense_row_array_list = [] 
+
+            while self_pointer < len(self._row_idx_vector) or other_pointer < len(other._row_idx_vector):
+
+                self_row_num = self._row_idx_vector[self_pointer] if self_pointer != len(self._row_idx_vector) else np.inf
+                other_row_num = other._row_idx_vector[other_pointer] if other_pointer != len(other._row_idx_vector) else np.inf
+
+                if self_row_num < other_row_num:
+                    new_row_idx_vector.append(self_row_num)
+                    new_dense_row_array_list.append(self._dense_row_array[self_pointer])
+                    self_pointer += 1
+                elif self_row_num > other_row_num:
+                    new_row_idx_vector.append(other._row_idx_vector[other_pointer])
+                    new_dense_row_array_list.append(other._dense_row_array[other_pointer])
+                    other_pointer += 1
+                else: # they are equal
+                    new_row_idx_vector.append(self_row_num)
+                    new_dense_row_array_list.append(self._dense_row_array[self_pointer]+other._dense_row_array[other_pointer])
+                    self_pointer += 1
+                    other_pointer += 1
+    
+            self._row_idx_vector = np.array(new_row_idx_vector)
+            self._dense_row_array = np.array(new_dense_row_array_list)
+
+            # while self_pointer < len(self._row_idx_vector) and other_pointer < len(other._row_idx_vector):
+
+            #     self_row_num = self._row_idx_vector[self_pointer]
+            #     other_row_num = other._row_idx_vector[other_pointer]
+
+            #     if self_row_num < other_row_num:
+            #         new_row_idx_vector.append(self_row_num)
+            #         new_dense_row_array_list.append(self._dense_row_array[self_pointer])
+            #         self_pointer += 1
+            #     elif self_row_num > other_row_num:
+            #         new_row_idx_vector.append(other._row_idx_vector[other_pointer])
+            #         new_dense_row_array_list.append(other._dense_row_array[other_pointer])
+            #         other_pointer += 1
+            #     else: # they are equal
+            #         new_row_idx_vector.append(self_row_num)
+            #         new_dense_row_array_list.append(self._dense_row_array[self_pointer]+other._dense_row_array[other_pointer])
+            #         self_pointer += 1
+            #         other_pointer += 1
+        
+            # if self_pointer == len(self._row_idx_vector):
+            #     while other_pointer < len(other._row_idx_vector):
+            #         new_row_idx_vector.append(other._row_idx_vector[other_pointer])
+            #         new_dense_row_array_list.append(other._dense_row_array[other_pointer])
+            #         other_pointer += 1
+
+            # elif other_pointer == len(other._row_idx_vector):
+            #     while self_pointer < len(self._row_idx_vector):
+            #         new_row_idx_vector.append(self._row_idx_vector[self_pointer])
+            #         new_dense_row_array_list.append(self._dense_row_array[self_pointer])
+            #         self_pointer += 1
+
+            # self._row_idx_vector = np.array(new_row_idx_vector)
+            # self._dense_row_array = np.array(new_dense_row_array_list)
+        else:
+            return NotImplementedError
+        
+        return self
+
+    
     def __mul__ (self, other):
         if isinstance(other, (float, int)):
+            #print(self._row_idx_vector)
             return RowSparseArray(row_idx_vector=self._row_idx_vector, 
                                   dense_row_array=self._dense_row_array * other, 
                                   total_array_rows=self.shape[0],
@@ -585,3 +816,5 @@ class RowSparseArray:
     def __str__(self):
         return f"Row Indices:\n{self._row_idx_vector}\nDense Array:\n{self._dense_row_array}\nShape: {self.shape}\nOffset: {self._offset}"
 
+    def __len__(self):
+        return self.shape[0]

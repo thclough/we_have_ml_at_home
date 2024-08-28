@@ -2,7 +2,7 @@ import gzip
 import os
 import traceback
 import regex as re
-from deep_learning import nn_layers
+from deep_learning import nn_layers, no_resources
 import numpy as np
 
 def pos_int(cand, var_name):
@@ -189,3 +189,114 @@ def one_hot_labels(y_data, one_hot_width):
     one_hot_labels[np.arange(y_data.size), y_data.astype(int).flatten()] = 1
 
     return one_hot_labels
+
+def adding_with_padding(first_val, second_val):
+    """first value to second value in place of first value, 
+    second value must have equal or smaller dimensions on first axis than first val, with all other dimensions being equal
+    pads second value with zeroes if smaller
+
+    Args:
+        first_val (array-like)
+        second_val (array-like)
+    """
+    
+    # handle integers
+    first_shape_len = len(first_val)
+    second_shape_len = len(second_val)
+
+    if first_shape_len == second_shape_len:
+        first_val += second_val
+        #return
+    elif first_shape_len > second_shape_len:
+        second_val = np.pad(second_val, ((0, first_shape_len-second_shape_len), (0,0)), mode="constant")
+        np.add(first_val, second_val, out=first_val)
+        #return
+    else:
+        raise Exception("Second length greater than first length")
+    
+def zero_lpad(array_to_pad, pad_width):
+    """pads 2d array to the left with zeroes by the pad width specified
+    
+    Args:
+        array_to_pad (numpy.ndarray) : array that needs left padding
+        pad_width (int) : number of zeroes to the left
+    """
+    return np.pad(array_to_pad, ((0, 0), (pad_width,0)), mode="constant", constant_values=0)
+
+def lol_flatten(list_of_lists):
+    """Flatten a list of lists, by combining lists in list, 
+
+    Args:
+        list_of_lists (list)
+
+    Returns
+        combined_list (list) : combined lists into one list
+    
+    """
+
+    combined_list = []
+
+    for member_list in list_of_lists:
+        combined_list += member_list
+
+    return combined_list
+
+def flatten_batch_outputs(batch_outputs):
+    """Flattens the outputs of a model into an array with dimensions (total_num_outputs_over_time, 1)
+    
+    Args:
+        batch_outputs (array-like) : outputs, possibly separated into multiple timesteps
+
+    Returns:
+        batch_outputs_flattened (np.ndarray) : (total_num_outputs_over_time, 1) array
+    """
+
+    if type(batch_outputs) == np.ndarray:
+        if batch_outputs.ndim > 2:
+            return batch_outputs.reshape(-1, batch_outputs.shape[-1])
+        else:
+            return batch_outputs
+    elif type(batch_outputs) == no_resources.OneHotTensor:
+        return batch_outputs.strip_flatten_to_array()
+    elif type(batch_outputs) == list:
+        return np.array(lol_flatten(batch_outputs))
+    else:
+        raise NotImplementedError
+    
+def array_list_product(array_list):
+    """Find product of list of numpy arrays of same dimensions
+
+    Args:
+        array_list (list) : list of numpy arrays to use as factors
+        
+    Returns:
+        product of the arrays
+        
+    """
+
+    return np.prod(np.stack(array_list, axis=0), axis=0)
+
+
+def join_paths(starts_of_paths, ends_of_paths):
+    """Joins path sections in starts_of_paths to path sections in ends_of_paths for paths of layers
+    
+    Args:
+        starts_of_paths (list of lists of 2-tuples of layers) : first parts of paths
+        ends_of_paths (list of lists of 2-tuple of layers) : second parts of paths
+
+    Returns:
+        connected_paths (list of lists of 2-tuples of layers) : final paths each with one part from first 
+    """
+
+    connected_paths = []
+
+    if len(starts_of_paths) != len(ends_of_paths):
+        raise Exception("Number of starts must be equal to number of ends")
+
+    for start, end in zip(sorted(starts_of_paths, key=lambda x : x[-1][-1].str_id), sorted(ends_of_paths, key=lambda x : x[0][0].str_id)):
+        if start[-1][-1] != end[0][0]:
+            raise Exception("Start paths and end paths do not match up, ")
+        connected_paths.append(start+end)
+    
+    return connected_paths
+         

@@ -3,7 +3,7 @@
 import time
 import numpy as np
 import joblib
-from deep_learning import node_funcs, learning_funcs
+from deep_learning import node_funcs, learning_funcs, utils
 import matplotlib.pyplot as plt
 import deep_learning.data_factory_blueprints
 
@@ -144,10 +144,10 @@ class NNDriver:
                 # end_gen = time.time()
                 # print(f"gen time {end_gen-start_gen}")
 
-                #start_batch = time.time()
+                start_batch = time.time()
                 self.model.batch_total_pass(X_train, y_train, self.learning_rate, self.reg_strength)
-                #end_batch = time.time()
-                #print(f"batch time: {end_batch-start_batch}")
+                end_batch = time.time()
+                print(f"batch time: {end_batch-start_batch}")
                 
                 if verbose:
                     if rng2.binomial(1, self._batch_prob):
@@ -281,8 +281,12 @@ class NNDriver:
             for X_data, y_data in eval_generator.generate():
                 y_probs = self.model.predict_prob(X_data)
 
+                # flatten if necessary
+                y_probs = utils.flatten_batch_outputs(y_probs)
+                y_data = utils.flatten_batch_outputs(y_data)
+
                 generator_cost_sum = np.sum(self.model.loss_layer.get_total_loss(y_probs, y_data))
-                chunk_length = X_data.shape[0]
+                chunk_length = y_data.shape[0]
 
                 loss_sum += generator_cost_sum
                 length += chunk_length

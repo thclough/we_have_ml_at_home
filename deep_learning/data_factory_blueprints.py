@@ -7,9 +7,19 @@ import queue
 import threading
 import warnings
 from deep_learning import utils, no_resources
+import pandas as pd
 
 # TODO
-# Put transformations in the datafactory -> fix creating linked chunks for MiniBatches where you load in data directly
+
+# fix how output dim and input dim are calculated (has to be after transform), maybe can use infer as well
+# fix creating linked chunks for MiniBatches where you load in data directly
+# Pull transformations out of data-factory
+# handle standardization (or just depend on someone calculating mean std outside of the )
+
+
+# COMPLETED
+# extracted data transformation (except for standardize)
+
 
 class DataFactoryFoundation:
     """Parent class to share functionality between other generators. 
@@ -70,10 +80,13 @@ class DataFactoryFoundation:
         self.input_transform = input_transform
 
         ###
-        self.set_input_dim()
-
         self._standardize = standardize
         ###
+        
+        self._input_blank_flag = self._set_has_blank_flag(self._input_jar)
+
+        if not self._input_blank_flag:
+            self.set_input_dim()
 
         self._set_num_data_lines()
         self._num_chunks = self._num_data_lines / self.batch_size
@@ -86,6 +99,12 @@ class DataFactoryFoundation:
             data_lines = sum(1 for line in data_file)
 
         self._num_data_lines = data_lines
+
+    def _set_has_blank_flag(self, jar):
+        """Sets if there are none/blank inputs in the data"""
+        with jar as data_file:
+            reader = csv.reader(data_file)
+            return any("" in line for line in reader)
 
     def set_data_output_props(self, output_path, data_selector=np.s_[:], skiprows=0, output_transform=None):
         """Set the label properties for the chunk object
@@ -110,8 +129,10 @@ class DataFactoryFoundation:
         self.output_transform = output_transform
 
         # handle one hot encoding
+        self._output_blank_flag = self._set_has_blank_flag(self._output_jar)
 
-        self.set_output_dim()
+        if not self._output_blank_flag:
+            self.set_output_dim()
 
         self._output_flag = True
 
@@ -158,7 +179,6 @@ class DataFactoryFoundation:
                 selector_dim = line.shape[-1]
             else:
                 selector_dim = len(line)
-            print(selector_dim)
 
         return selector_dim
 
@@ -201,13 +221,13 @@ class MiniBatchAssembly(DataFactoryFoundation):
     # Data generation
     def generate_input_data(self):
         """Generate X_data input"""
-        return self.generate_raw_jar_data(self._input_flag, self._input_jar, self._input_skiprows, self._data_input_selector, 0, self.input_transform)
+        return self.generate_raw_jar_data(self._input_flag, self._input_jar, self._input_skiprows, self._data_input_selector, 0, self.input_transform, self._input_blank_flag)
 
     def generate_output_data(self):
         """Generate X_data input"""
-        return self.generate_raw_jar_data(self._output_flag, self._output_jar, self._output_skiprows, self._data_output_selector, 2, self.output_transform)
+        return self.generate_raw_jar_data(self._output_flag, self._output_jar, self._output_skiprows, self._data_output_selector, 2, self.output_transform, self._output_blank_flag)
 
-    def generate_raw_jar_data(self, set_flag, jar_opener, skiprows, data_selector, ndmin=0, transform_func=None):
+    def generate_raw_jar_data(self, set_flag, jar_opener, skiprows, data_selector, ndmin, transform_func, blank_flag):
         """Generate raw jar data without transforming the data
 
         Args:
@@ -215,9 +235,10 @@ class MiniBatchAssembly(DataFactoryFoundation):
             jar_opener (utils.JarOpener) : jar opener of file to open
             skiprows (int) : number or rows to skip
             data_selector (IndexExpression) : numpy index expression to select data from generated raw data
-            ndmin (int, default=0) : The returned array will have at least ndmin dimensions. Otherwise mono-dimensional axes will be squeezed. 
+            ndmin (int) : The returned array will have at least ndmin dimensions. Otherwise mono-dimensional axes will be squeezed. 
                 Legal values: 0 (default), 1 or 2.
             transform_func (function) : Function to transform the data in a certain way
+            blank_flag (bool) : if the file has None/blank inputs
 
         Yields:
             data (numpy array) : data from jar opener of set chunk size
@@ -229,13 +250,15 @@ class MiniBatchAssembly(DataFactoryFoundation):
 
         # open the file
         with jar_opener as data_file:
-
             # skip rows
             for _ in range(skiprows):
                 next(data_file)
 
-            # read data
-            data = np.loadtxt(data_file, delimiter=",", ndmin=ndmin, dtype=int)
+            if blank_flag:
+                data = pd.read_csv(data_file)
+            else:
+                # read data
+                data = np.loadtxt(data_file, delimiter=",", ndmin=ndmin, dtype=int)
 
             data = data[:,data_selector]
 
@@ -562,13 +585,13 @@ class ChunkFactory(DataFactoryFoundation):
 
     def generate_input_data(self):
         """Generate X_data input"""
-        return self.generate_raw_jar_data(self._input_flag, self._input_jar, self._input_skiprows, self._data_input_selector, 0, self.input_transform)
+        return self.generate_raw_jar_data(self._input_flag, self._input_jar, self._input_skiprows, self._data_input_selector, 0, self.input_transform, self._input_blank_flag)
 
     def generate_output_data(self):
         """Generate X_data input"""
-        return self.generate_raw_jar_data(self._output_flag, self._output_jar, self._output_skiprows, self._data_output_selector, 2, self.output_transform)
+        return self.generate_raw_jar_data(self._output_flag, self._output_jar, self._output_skiprows, self._data_output_selector, 2, self.output_transform, self._output_blank_flag)
 
-    def generate_raw_jar_data(self, set_flag, jar_opener, skiprows, data_selector, ndmin, transform_func):
+    def generate_raw_jar_data(self, set_flag, jar_opener, skiprows, data_selector, ndmin, transform_func, blank_flag):
         """Generate raw jar data without transforming into no_resources.OneHotArray for input or one hot vector for output data
 
         Args:
@@ -576,8 +599,9 @@ class ChunkFactory(DataFactoryFoundation):
             jar_opener (utils.JarOpener) : jar opener of file to open
             skiprows (int) : number or rows to skip
             data_selector (IndexExpression) : numpy index expression to select data from generated raw data
-            ndmin (int, default=0) : The returned array will have at least ndmin dimensions. Otherwise mono-dimensional axes will be squeezed. 
+            ndmin (int) : The returned array will have at least ndmin dimensions. Otherwise mono-dimensional axes will be squeezed. 
                 Legal values: 0 (default), 1 or 2.
+            blank_flag (bool) : if the file has None/blank inputs
 
         Yields:
             data (numpy array) : data from jar opener of set chunk size
@@ -595,23 +619,33 @@ class ChunkFactory(DataFactoryFoundation):
                 next(data_file)
 
             # obtain the chunk of X_data
-            while True:
-                with warnings.catch_warnings():
-                    warnings.simplefilter("ignore")
-                    data = np.loadtxt(data_file, delimiter=",", max_rows=self.batch_size, ndmin=ndmin, dtype=int)
+            if blank_flag: # to read in None values
+                for chunk in pd.read_csv(data_file, chunksize=self.batch_size):
+                    data = chunk.to_numpy()
+                    data = data[:,data_selector]
 
-                data_len = data.shape[0]
+                    if transform_func is not None:
+                        data = transform_func(data)
 
-                # split the data into training data
-                if data_len == 0:
-                    break
+                    yield data
+            else:
+                while True:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore")
+                        data = np.loadtxt(data_file, delimiter=",", max_rows=self.batch_size, ndmin=ndmin, dtype=int)
 
-                data = data[:,data_selector]
+                    data_len = data.shape[0]
 
-                if transform_func is not None:
-                    data = transform_func(data)
+                    # split the data into training data
+                    if data_len == 0:
+                        break
 
-                yield data
+                    data = data[:,data_selector]
+
+                    if transform_func is not None:
+                        data = transform_func(data)
+
+                    yield data
 
     def build_queue(self, q_to_build, generator):
         """Target function for thread
@@ -665,14 +699,13 @@ class ChunkFactory(DataFactoryFoundation):
 
             split_idxs = self._get_split_idxs(X_data.shape[0], rng)[gen_key]
 
-            # if batch_num == 1:
-            #     print(dev_idxs)
+            if self._input_blank_flag or self._output_blank_flag:
+                split_idxs.sort()
 
             X = X_data[split_idxs]
             y = y_data[split_idxs]
 
             yield X, y
-            #batch_num += 1
 
     def generate_all(self):
         """Generate data for all datasets and return in a dictionary"""
