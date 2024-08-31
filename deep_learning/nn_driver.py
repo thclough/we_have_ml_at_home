@@ -144,10 +144,10 @@ class NNDriver:
                 # end_gen = time.time()
                 # print(f"gen time {end_gen-start_gen}")
 
-                start_batch = time.time()
+                # start_batch = time.time()
                 self.model.batch_total_pass(X_train, y_train, self.learning_rate, self.reg_strength)
-                end_batch = time.time()
-                print(f"batch time: {end_batch-start_batch}")
+                # end_batch = time.time()
+                # print(f"batch time: {end_batch-start_batch}")
                 
                 if verbose:
                     if rng2.binomial(1, self._batch_prob):
@@ -279,6 +279,7 @@ class NNDriver:
             length = 0
 
             for X_data, y_data in eval_generator.generate():
+
                 y_probs = self.model.predict_prob(X_data)
 
                 # flatten if necessary

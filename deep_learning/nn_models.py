@@ -424,7 +424,7 @@ class JointedModel:
         
         for layer, target_layers in graph_dict_layers.items():
             if type(layer) != nn_layers.Splitter and len(target_layers) > 1:
-                raise Exception("Layer cannot have more than one output node if it is not a splitter")
+                raise Exception(f"Layer {layer} cannot have more than one output node if it is not a splitter")
 
     def _val_data_nodes(self, data_nodes):
         """Validate the data nodes of the graph. Make sure there are start nodes and that they have input layers"""
@@ -551,7 +551,7 @@ class JointedModel:
         for start, target in self.reg_cell_edge_order + self.concat_connection_edge_order:
             if type(target) == nn_layers.ConcatLayer:
                 target.input_shapes.append(start.output_shape)
-                print(f"{target} shape: {target.input_shapes}")
+                # print(f"{target} shape: {target.input_shapes}")
 
     def separate_state_alleys(self, ordered_edges):
         """Separate the the regular cell edges from the paths that lead to state inputs
@@ -615,7 +615,7 @@ class JointedModel:
     def batch_total_pass(self, X_train, y_train, learning_rate, reg_strength):
         # forward pass
         self.forward_prop(X_train)
-    
+
         # perform back prop to obtain gradients and update
         self.back_prop(X_train, y_train, learning_rate, reg_strength)
 
@@ -665,8 +665,11 @@ class JointedModel:
             if type(start) in (nn_layers.StackedInputLayer, nn_layers.SumLayer, nn_layers.Splitter, nn_layers.ConcatLayer, nn_layers.MultLayer):
                 input_val = start.discharge_cell_output(forward_prop_flag)
             elif type(start) == nn_layers.StateInputLayer: # for variable length sequences
-                # peek at the next batch size
-                output_dim = len(self.data_node.data_input_stack[0])
+                if generation_hold is None:
+                    # peek at the next batch size
+                    output_dim = len(self.data_node.data_input_stack[0])
+                else:
+                    output_dim = len(generation_hold[-1])
                 # limit to that batch size
                 input_val = start.discharge_cell_output(forward_prop_flag)[:output_dim]
 
@@ -681,27 +684,28 @@ class JointedModel:
                 if self._has_loss:
                     if target == self.loss_layer:
                         input_val = target.advance(input_val, forward_prop_flag)
+
                         if output_hold is not None:
                             output_hold.append(input_val)
 
                         # store and add to the data stack if data generation
                         if not self.data_node.flowing and generation_hold is not None:
-                                #print(f"input_val {input_val}")
-                                if self.loss_layer.loss_func == node_funcs.MSE:
-                                    sampled = input_val
-                                elif self.loss_layer.loss_func == node_funcs.BCE:
-                                    sampled = [[np.random.binomial(1, p=dist)] for dist in input_val]
-                                    if len(sampled) > 1:
-                                        sampled = np.vstack(sampled)
-                                else:
-                                    sampled = [[np.random.choice(input_val.shape[-1], p=dist)] for dist in input_val]
-                                    if len(sampled) > 1:
-                                        sampled = np.vstack(sampled)
-                                    # convert to oha if needed
-                                    if type(generation_hold[-1]) == no_resources.OneHotArray:
-                                        #print(sampled)
-                                        sampled = no_resources.OneHotArray(shape=(len(sampled),input_val.shape[-1]), idx_array=sampled)
-                                generation_hold.append(sampled)
+                            #print(f"input_val {input_val}")
+                            if self.loss_layer.loss_func == node_funcs.MSE:
+                                sampled = input_val
+                            elif self.loss_layer.loss_func == node_funcs.BCE:
+                                sampled = [[np.random.binomial(1, p=dist)] for dist in input_val]
+                                if len(sampled) > 1:
+                                    sampled = np.vstack(sampled)
+                            else:
+                                sampled = [[np.random.choice(input_val.shape[-1], p=dist)] for dist in input_val]
+                                if len(sampled) > 1:
+                                    sampled = np.vstack(sampled)
+                                # convert to oha if needed
+                                if type(generation_hold[-1]) == no_resources.OneHotArray:
+                                    #print(sampled)
+                                    sampled = no_resources.OneHotArray(shape=(len(sampled),input_val.shape[-1]), idx_array=sampled)
+                            generation_hold.append(sampled)
                     else:
                         input_val = target.advance(input_val, forward_prop_flag)
                 else:    
@@ -719,7 +723,7 @@ class JointedModel:
             
             self.timestep -= 1
             for target, start in reversed(edge_order):
-                #print(target, start)
+                # print(f"back course : {start}, {target}")
 
                 if isinstance(start, nn_layers.Loss):
                     # get correct dimension
@@ -733,8 +737,7 @@ class JointedModel:
                         y_train_t = np.array([y_train_m[self.timestep] for y_train_m in y_train if len(y_train_m) > self.timestep])
 
                     input_grad_to_loss = start.back_up(y_train_t)
-
-                # print(f"back course : {start}, {target}")
+                
                 if type(start) in (nn_layers.Splitter, nn_layers.SumLayer, nn_layers.ConcatLayer, nn_layers.MultLayer):
                     input_grad_to_loss = start.discharge_cell_input_grad()
                 elif type(start) == nn_layers.StateInputLayer:
@@ -744,8 +747,6 @@ class JointedModel:
 
                     if after_length != before_length:
                         input_grad_to_loss = np.pad(input_grad_to_loss, ((0, before_length-after_length), (0,0)), mode="constant")
-                    
-                #print(input_grad_to_loss.shape)
 
                 if type(target) in (nn_layers.Splitter, nn_layers.StateInputLayer, nn_layers.ConcatLayer, nn_layers.MultLayer):
                     target.store_cell_output_grad(input_grad_to_loss)
@@ -791,16 +792,17 @@ class JointedModel:
         self.data_node.load_data(X)
 
         while len(generation_sequence) < cutoff_length:
+
             if not self.data_node.flowing:
                 self.data_node.store_cell_input(generation_sequence[-1])
 
             # set the edge order
-            if len(self.data_node.data_input_stack) > 1:
+            if len(self.data_node.data_input_stack) > 1 or len(generation_sequence) < cutoff_length - 1:
                 edge_order = self.reg_cell_edge_order + self.concat_connection_edge_order
             else:
                 edge_order = self.reg_cell_edge_order 
 
-            self.flow_forward(edge_order=edge_order, generation_hold=generation_sequence,)
+            self.flow_forward(edge_order=edge_order, generation_hold=generation_sequence)
         return generation_sequence
 
     def predict_prob(self, X):
@@ -882,156 +884,3 @@ class JointedModel:
         if not isinstance(potential_model, cls):
             raise TypeError(f"Loaded model must be of type {cls}")
         return potential_model
-
-
-class RecurrentNN:
-    """Simple recurrent many-to-many neural network
-
-    Attributes:
-        Tx (int) : length of sequence of inputs
-        Ty (int) : length of sequence of outputs
-        xs_model : model that maps from input to state precursor
-        so_model : model that maps from state to output
-        ss_model : model that maps from state to state precursor
-        bo : bias to add before output activation
-        bs : bias to add before state activation
-        s : the model state
-    """
-   
-    def __init__(self, Tx, Ty,
-                 xs_model,
-                 so_model,
-                 ss_model, 
-                 state_activation=node_funcs.TanH):
-
-        self.Tx = Tx
-        self.Ty = Ty
-
-        self.xs_model = xs_model
-        self.so_model = so_model
-        self.ss_model = ss_model
-
-        self._state_activation = state_activation
-
-        self.has_fit = False
-
-    # setters and getters
-
-    @property
-    def Tx(self):
-        return self._Tx
-    
-    @Tx.setter
-    def Tx(self, Tx_cand):
-        utils.pos_int(Tx_cand, "Tx")
-        if Tx_cand < 2:
-            raise ValueError("Tx should be greater than 1")
-        self._Tx = Tx_cand
-
-    @property
-    def Ty(self):
-        return self._Ty
-    
-    @Ty.setter
-    def Ty(self, Ty_cand):
-        utils.pos_int(Ty_cand, "Ty")
-        if Ty_cand != 1 and Ty_cand != self.Tx:
-            raise ValueError("Ty must be equal to Tx or set to 1")
-
-        self._Ty = Ty_cand
-
-    @property
-    def xs_model(self):
-        return self._xs_model
-
-    @xs_model.setter
-    def xs_model(self, xs_model_cand):
-        assert type(xs_model_cand) == MonoModelPiece, "RNN submodels must be of type RecurrentNNSubModel"
-
-        if xs_model_cand.track_input_layer_flag:
-            raise Exception("Should not track input layer for input models")
-        
-        self._xs_model = xs_model_cand
-
-    @property
-    def so_model(self):
-        return self._so_model
-
-    @so_model.setter
-    def so_model(self, so_model_cand):
-        assert type(so_model_cand) == MonoModelPiece, "RNN submodels must be of type RecurrentNNSubModel"
-
-        if not so_model_cand.loss_required_flag:
-            raise Exception("so_model should have a loss")
-        
-        if not so_model_cand.track_input_layer_flag:
-            raise Exception("Should track input layer for so_model")
-
-        assert self.xs_model.output_shape == so_model_cand.input_shape, "State dimensions must match (dimensions must match between xs model output and so model input)"
-
-        self._so_model = so_model_cand
-
-    @property
-    def ss_model(self):
-        return self._ss_model
-
-    @ss_model.setter
-    def ss_model(self, ss_model_cand):
-        assert type(ss_model_cand) == MonoModelPiece, "RNN submodels must be of type RecurrentNNSubModel"
-
-        if not ss_model_cand.track_input_layer_flag:
-            raise Exception("Should track input layer for ss_model")
-    
-        assert self.xs_model.output_shape == ss_model_cand.input_shape, "State dimensions must match (dimensions must match between xs model output and ss model input)"
-
-        self._ss_model = ss_model_cand
-
-    # INITIALIZE PARAMS
-
-    def initialize_params(self):
-
-        self.xs_model.initialize_params()
-        self.so_model.initialize_params()
-        self.ss_model.initialize_params()
-
-        self._state_dim = self.ss_model.input_shape
-
-        self.bs = np.zeros(self._state_dim)
-        self.bo = np.zeros(self.so_model.output_shape)
-
-    def batch_total_pass(self, X_train, y_train, learning_rate, reg_strength):
-        """forward propagation, backward propagation through time and parameter updates for gradient descent"""
-
-        # forward pass
-        self.forward_in_time(X_train, y_train, learning_rate, reg_strength)
-
-        # perform back prop to obtain gradients and update
-        self.back_in_time(X_train, y_train, learning_rate, reg_strength)
-
-    def forward_in_time(self, X_train, y_train, learning_rate, reg_strength):
-        
-        # initialize the state to a zero vector
-        state = np.zeros(self._state_dim)
-
-        for t in range(self.Tx):
-            tx_inputs = X_train[:,t,:]
-
-            xs_output = self.xs_model.forward_prop(tx_inputs)
-            ss_output = self.ss_model.forward_prop(state)
-
-            state = self.state_activation.forward(xs_output + ss_output + self.bs)
-            
-            # output if needed
-            if t >= self.Tx - self.Ty:
-                ty_outputs = y_train[:,t-(self.Tx-self.Ty),:]
-                self.so_model.forward_prop(state)
-                #dh_dL = 
-
-
-    def back_in_time(self):
-        pass
-
-
-    
-
-        

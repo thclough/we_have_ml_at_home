@@ -74,7 +74,6 @@ class Web(Node):
         """Move forward in the Neural net"""
 
         if forward_prop_flag:
-            #print(f"input val append: {input_val.shape}")
             self._input_stack.append(input_val)
 
         if self.use_bias:
@@ -85,11 +84,7 @@ class Web(Node):
         return output
 
     def back_up(self, output_grad_to_loss, learning_rate, reg_strength, update_params_flag=True):
-        
-        # print(f"output_grad_to_loss {output_grad_to_loss.shape}")
-        # print(f"self._weights {self._weights.shape}")
 
-        #print(output_grad_to_loss)
         if self.calc_input_grad_flag:
             input_grad_to_loss = output_grad_to_loss @ self._weights.T
         else:
@@ -144,7 +139,7 @@ class Web(Node):
             weights_grad_to_loss = input_val.T @ (output_grad_to_loss / m) + 2 * reg_strength * self._weights
         else:
             weights_grad_to_loss = input_val.T @ (output_grad_to_loss / m)
-        
+
         return weights_grad_to_loss
     
     def _calc_bias_grads(self, output_grad_to_loss):
@@ -277,7 +272,7 @@ class StackedInputLayer(SameDimLayer):
 
     def store_cell_input(self, input_val):
         if input_val.shape[-1] != self.dim:
-            raise Exception("Data dimension mismatch between input and set dimension")
+            raise Exception(f"Data dimension mismatch between input and set dimension, data is {input_val.shape} but should be {self.dim}")
         self.data_input_stack.append(input_val)
         self.cell_input_batch_sizes.append(len(input_val))
 
@@ -672,18 +667,26 @@ class ConcatLayer(Node):
         self.cell_input_stack = []
 
         self.input_grads = []
+
+        self.input_shapes_tracker = []
+        self.input_shapes_tracker_temp = []
         
     def store_cell_input(self, input_val):
         
         if type(input_val) != np.ndarray:
             input_val = input_val.to_array()
 
-        # validate making sure input shape appearing in right order
+        # validate input shapes appearing in right order
         correct_shape = self.input_shapes[self.input_shape_idx]
         self.input_shape_idx = (self.input_shape_idx + 1) % len(self.input_shapes)
 
         if input_val.shape[-1] != correct_shape:
             raise Exception(f"Input shape should be {correct_shape}, but {input_val.shape[-1]} was provided")
+        
+        # input shapes tracker
+        self.input_shapes_tracker_temp.append(input_val.shape[-1])
+        if len(self.input_shapes_tracker_temp) > len(self.input_shapes_tracker):
+            self.input_shapes_tracker = self.input_shapes_tracker_temp[:]
 
         self.cell_input_stack.append(input_val)
 
@@ -692,6 +695,7 @@ class ConcatLayer(Node):
         output = np.hstack(self.cell_input_stack)
         # clear the output
         self.cell_input_stack = []
+        self.input_shapes_tracker_temp = []
 
         # pad if needed (first timestep cell where no state input is provided)
         if output.shape[-1] < self.output_shape:
@@ -705,9 +709,9 @@ class ConcatLayer(Node):
         if len(self.input_grads) > 0:
             raise Exception("Input grads already set")
         
-        hsplit_idxs = np.cumsum(self.input_shapes[:-1])
+        hsplit_idxs = np.cumsum(self.input_shapes_tracker[:-1])
         self.input_grads = np.hsplit(output_grad_to_loss, hsplit_idxs) # splits
-    
+
     def discharge_cell_input_grad(self):
         # discharge in reverse order of input through splitting with right order of dimensions
         return self.input_grads.pop()
@@ -736,7 +740,10 @@ class MultLayer(SameDimLayer):
 
     def discharge_cell_output(self, forward_prop_flag=True):
         
-        product = utils.array_list_product(self.cell_input_stack)
+        if len(self.cell_input_stack) > 1:
+            product = utils.array_list_product(self.cell_input_stack)
+        else:
+            product = np.zeros(self.cell_input_stack[0].shape)
 
         self.save_io_grads(product)
 
@@ -765,4 +772,17 @@ class MultLayer(SameDimLayer):
 
         return self.output_grad * io_grad
 
+class ComplementLayer(SameDimLayer):
+    """1 - the input"""
+    learnable = False
+
+    def __init__(self, str_id=None):
+
+        super().__init__(str_id=str_id)
+
+    def advance(self, input_val, forward_prop_flag=True):
+        return 1 - input_val
     
+    def back_up(self, output_grad_to_loss):
+        return -output_grad_to_loss
+        
