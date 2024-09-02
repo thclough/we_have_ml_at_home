@@ -282,6 +282,18 @@ class NNDriver:
 
                 y_probs = self.model.predict_prob(X_data)
 
+                # print("X_data")
+                # print(X_data)
+
+                # print("y_data before")
+                # print(y_data)
+                
+                if self.model.backwards:
+                    y_data = utils.flip_time(y_data)
+
+                # print("y_data after")
+                # print(y_data)
+
                 # flatten if necessary
                 y_probs = utils.flatten_batch_outputs(y_probs)
                 y_data = utils.flatten_batch_outputs(y_data)

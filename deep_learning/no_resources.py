@@ -304,7 +304,7 @@ class OneHotTensor:
 
     def strip_flatten_to_array(self):
         """Convert to 2d array where there are no zero rows, one hot arrays are concatenated on top of each other
-        Often used when OneHotTensor represents on"""
+        Returns a large one hot array in regular array /large format"""
 
         num_filled_rows = 0
 
@@ -315,15 +315,27 @@ class OneHotTensor:
 
         row_num = 0
         for oha in self.oha_list:
-            for row, one_locations in oha.idx_rel.items():
+            for row, one_locations in sorted(oha.idx_rel.items()): # these have to be sorted 
                 for one_location in one_locations:
                     strip_flattened_array[row_num, one_location] = 1
                 row_num+=1
 
         return strip_flattened_array
     
+    def flip_ohas_copy(self):
+        
+        new_oha_list = []
+
+        for oha in self.oha_list:
+            new_oha_list.append(oha.flip_copy())
+
+        return OneHotTensor(oha_list=new_oha_list, uniform_shape_flag=self.uniform_shape_flag)
+
     def __len__(self):
         return self.shape[0]
+    
+    def __str__(self):
+        return str([str(oha) for oha in self.oha_list])
 
 class OneHotArray:
     """Sparse array for maximizing storage efficiency
@@ -444,7 +456,7 @@ class OneHotArray:
 
     def __getitem__(self, key):
         """Defining getitem to duck type with numpy arrays for 0th axis slicing and indexing"""
-        # define dimensions and n_rows placeholder
+        # define dimensions and n_rows placeholder   
         n_rows = 0
         n_cols = self.shape[1]
 
@@ -517,12 +529,13 @@ class OneHotArray:
             n_rows (int) : counter for amount of rows 
         
         """
+
         start = 0 if slice_obj.start is None else slice_obj.start
 
         stop = self.shape[0] if slice_obj.stop is None else slice_obj.stop
         
         step = 1 if slice_obj.step is None else slice_obj.step
- 
+
         for idx in range(start, stop, step):
             n_rows = self.add_int_key(idx, gathered, n_rows)
 
@@ -575,7 +588,19 @@ class OneHotArray:
         return str(self.idx_rel)
     
     def trim_tail(self):
-        self.shape[0] = max(self.idx_rel)
+        self.shape = (max(self.idx_rel)+1, self.shape[1])
+        #self.shape[0] = max(self.idx_rel)
+
+    def flip_copy(self):
+        """Flip the one hot array about the 0th axis, returns a new array"""
+
+        new_oha_dict = {}
+        for row_num, one_locations in self.idx_rel.items():
+            flipped_row = len(self) - row_num - 1 # -1 because zero indexed
+            new_oha_dict[flipped_row] = one_locations
+
+        return OneHotArray(shape=self.shape, oha_dict=new_oha_dict)
+
 
 class RowSparseArray:
     """Row vectors assumed to be dense, column vectors assumed to be sparse, many zero vector rows"""

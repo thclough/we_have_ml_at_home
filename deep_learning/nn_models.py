@@ -305,9 +305,10 @@ class JointedModel:
 
     Attributes:
         cell_dict (dict) : {node -> target_nodes} graph dictionary that represents a cell
+        backwards (bool) : whether model 
     """
 
-    def __init__(self, cell_dict):
+    def __init__(self, cell_dict, backwards=False):
         
         self._has_loss = False
 
@@ -320,6 +321,8 @@ class JointedModel:
         self._has_dropout = False
 
         self.timestep = 0
+
+        self.backwards = backwards
 
     @property
     def has_fit(self):
@@ -625,7 +628,7 @@ class JointedModel:
     def flow_forward_helper(self, X, forward_prop_flag=False, output_hold=None, generation_hold=None):
         #self.flow_forward(X_train, True)
         if type(self.data_node) == nn_layers.StackedInputLayer:
-            self.data_node.load_data(X)
+            self.data_node.load_data(X, track_input_size=forward_prop_flag, load_backwards=self.backwards)
             input_val = None
         elif type(self.data_node) == nn_layers.InputLayer:
             input_val = self.data_node.advance(X)
@@ -670,8 +673,11 @@ class JointedModel:
                     output_dim = len(self.data_node.data_input_stack[0])
                 else:
                     output_dim = len(generation_hold[-1])
-                # limit to that batch size
-                input_val = start.discharge_cell_output(forward_prop_flag)[:output_dim]
+
+                # limit or expand state to match next cell batch size, will call this accordion
+                input_val = utils.accordion(start.discharge_cell_output(forward_prop_flag), output_dim)
+
+            # print(f"input val shape {input_val.shape}")
 
             # advance or store the cell input
             if type(target) in (nn_layers.SumLayer, nn_layers.Splitter, nn_layers.ConcatLayer, nn_layers.MultLayer):
@@ -714,39 +720,51 @@ class JointedModel:
     def back_prop(self, X_train, y_train, learning_rate, reg_strength):
         # loss reached flag to indicate when to start calculating output gradients and updating layers
         last_cell_flag = True
+        
         while self.timestep > 0:
             if last_cell_flag:
                 edge_order = self.reg_cell_edge_order
                 last_cell_flag = False
+                cell_batch_size = self.data_node.cell_input_batch_sizes.pop()
             else:
                 edge_order = self.reg_cell_edge_order + self.concat_connection_edge_order
+
+                cell_batch_size = self.data_node.cell_input_batch_sizes.pop() if self.data_node.cell_input_batch_sizes else None
             
             self.timestep -= 1
+
+            # handling variable length sequence
+            
             for target, start in reversed(edge_order):
                 # print(f"back course : {start}, {target}")
-
+                # HANDLE START
                 if isinstance(start, nn_layers.Loss):
                     # get correct dimension
-                    output_length = self.data_node.cell_input_batch_sizes.pop()
                     # fix first y train
+                    t_idx = -self.timestep - 1 if self.backwards else self.timestep
                     if isinstance(y_train, (np.ndarray, no_resources.OneHotTensor)):
-                        y_train_t = y_train[:,self.timestep,:] # :output length on first if dealing with numpy array with variable sequences
+
+                        y_train_t = y_train[:,t_idx,:] # :output length on first if dealing with numpy array with variable sequences
+                        
                         if type(y_train_t) != np.ndarray:
                             y_train_t = y_train_t.to_array()
-                    else: # to deal with uneven sequences
-                        y_train_t = np.array([y_train_m[self.timestep] for y_train_m in y_train if len(y_train_m) > self.timestep])
+
+                    else: # to deal with uneven sequences on list like forms
+                        y_train_t = np.array([y_train_m[t_idx] for y_train_m in y_train if len(y_train_m) > self.timestep])
 
                     input_grad_to_loss = start.back_up(y_train_t)
                 
                 if type(start) in (nn_layers.Splitter, nn_layers.SumLayer, nn_layers.ConcatLayer, nn_layers.MultLayer):
                     input_grad_to_loss = start.discharge_cell_input_grad()
+
                 elif type(start) == nn_layers.StateInputLayer:
-                    before_length = self.data_node.cell_input_batch_sizes[-1]
+                    # variable lengths sequences
                     input_grad_to_loss = start.discharge_cell_input_grad()
                     after_length = len(input_grad_to_loss)
 
-                    if after_length != before_length:
-                        input_grad_to_loss = np.pad(input_grad_to_loss, ((0, before_length-after_length), (0,0)), mode="constant")
+                    input_grad_to_loss = utils.accordion(input_grad_to_loss, cell_batch_size)
+
+                # HANDLE TARGET
 
                 if type(target) in (nn_layers.Splitter, nn_layers.StateInputLayer, nn_layers.ConcatLayer, nn_layers.MultLayer):
                     target.store_cell_output_grad(input_grad_to_loss)
@@ -778,6 +796,7 @@ class JointedModel:
         Returns:
             output_sequence (list) : generated sequence of the model
         """
+
         if len(X.shape) != 3:
             raise Exception("X must be in shape (num_examples, time_periods, output_dims) form")
         
@@ -789,7 +808,7 @@ class JointedModel:
         self.reset_concat_layers()
 
         # append first input before taken out
-        self.data_node.load_data(X)
+        self.data_node.load_data(X, load_backwards=self.backwards)
 
         while len(generation_sequence) < cutoff_length:
 
@@ -803,32 +822,20 @@ class JointedModel:
                 edge_order = self.reg_cell_edge_order 
 
             self.flow_forward(edge_order=edge_order, generation_hold=generation_sequence)
+
         return generation_sequence
 
     def predict_prob(self, X):
         """Accumulates output
         and shifts (timesteps, num_examples, categories) to (num_examples, timesteps, categories)"""
+        
         output_hold = []
         self.flow_forward_helper(X, forward_prop_flag=False, output_hold=output_hold)
 
         # assumed sorted from largest to smallest
         if len(output_hold[0]) != len(output_hold[-1]): # uneven sequence lengths
-            if len(output_hold[0][0]) == 1:
-                one_val_flag = True
-            else:
-                one_val_flag = False
-
-            output_hold_final = []
-            for m in range(len(output_hold[0])):
-                m_list = []
-                for output in output_hold:
-                    if one_val_flag:
-                        output_list = output.flatten()
-                    else:
-                        output_list = output.tolist()
-                    if m < len(output):
-                        m_list.append(output_list[m])
-                output_hold_final.append(m_list)
+            
+            output_hold_final = self.uneven_swap_axes(output_hold)
 
                 #output_hold_final.append([output[m] for output in output_hold if m < len(output)])
         else: # same sequence lengths, represent numpy array
@@ -837,6 +844,28 @@ class JointedModel:
 
         return output_hold_final
 
+    def uneven_swap_axes(self, output_hold):
+        """Shifts (timesteps, num_examples, categories) output to (num_examples, timesteps, categories) output"""
+
+        one_val_flag = len(output_hold[0][0]) == 1
+
+        output_hold_final = []
+        max_batch_size = max(len(output_hold[0]),len(output_hold[-1])) # for either increasing or decreasing lengths
+
+        for m in range(max_batch_size):
+            m_list = []
+            for output in output_hold:
+                if one_val_flag:
+                    output_list = output.flatten()
+                else:
+                    output_list = output.tolist()
+                if m < len(output):
+                    m_list.append(output_list[m])
+
+            output_hold_final.append(m_list)
+
+        return output_hold_final
+    
     def predict_labels(self, X):
 
         # calculate activation values for each layer (includes predicted values)
@@ -865,7 +894,14 @@ class JointedModel:
 
         # flatten y_pred and y_true to make compatible with past infrastructure
         y_pred = utils.flatten_batch_outputs(y_pred)
+
+        if self.backwards:
+            y_true = utils.flip_time(y_true)
+
         y_true = utils.flatten_batch_outputs(y_true)
+
+        # print(f"len y_pred {len(y_pred)}")
+        # print(f"len y_true {len(y_true)}")
 
         cost = self.loss_layer.get_cost(y_pred, y_true)
 

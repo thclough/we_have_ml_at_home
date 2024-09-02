@@ -191,9 +191,10 @@ def one_hot_labels(y_data, one_hot_width):
     return one_hot_labels
 
 def adding_with_padding(first_val, second_val):
-    """first value to second value in place of first value, 
-    second value must have equal or smaller dimensions on first axis than first val, with all other dimensions being equal
-    pads second value with zeroes if smaller
+    """adding two dimensional arrays, first value to second value in place of first value. 
+    1st dimension must be the same, but if 0th dimension is different, will pad the shorter with zeroes
+    to add to the longer
+
 
     Args:
         first_val (array-like)
@@ -206,14 +207,34 @@ def adding_with_padding(first_val, second_val):
 
     if first_shape_len == second_shape_len:
         first_val += second_val
-        #return
     elif first_shape_len > second_shape_len:
         second_val = np.pad(second_val, ((0, first_shape_len-second_shape_len), (0,0)), mode="constant")
         np.add(first_val, second_val, out=first_val)
-        #return
-    else:
-        raise Exception("Second length greater than first length")
+    elif first_shape_len < second_shape_len:
+        first_val = np.pad(second_val, ((0, second_shape_len-first_shape_len), (0,0)), mode="constant")
+        np.add(first_val, second_val, out=first_val)
     
+def accordion(array, desired_len):
+    """Shorten or stretch (pad) len of array to desired length
+    
+    Args:
+        array (np.ndarray) : array to modify
+        desired_len (int) : 
+
+    Returns:
+        array of desired length
+    """
+
+    array_len = len(array)
+
+    if desired_len < array_len:
+        return array[:desired_len]
+    elif desired_len > array_len:
+        pad_list = [(0, desired_len-array_len)] + [(0,0)] * (array.ndim - 1)
+        return np.pad(array, tuple(pad_list), mode="constant")
+    else:
+        return array
+
 def zero_lpad(array_to_pad, pad_width):
     """pads 2d array to the left with zeroes by the pad width specified
     
@@ -240,6 +261,26 @@ def lol_flatten(list_of_lists):
         combined_list += member_list
 
     return combined_list
+
+def flip_the_lists_in_the_list(list_of_lists):
+    return [item[::-1] for item in list_of_lists]
+
+def lol_flip_flatten(list_of_lists):
+    
+    return lol_flatten(flip_the_lists_in_the_list(list_of_lists))
+
+def flip_time(batch_outputs):
+    """Flip timesteps axis on (num_examples, timesteps, categories), 
+    used for backwards jointed model"""
+
+    if type(batch_outputs) == np.ndarray:
+        return np.flip(batch_outputs, 1)
+    elif type(batch_outputs) == no_resources.OneHotTensor:
+        return batch_outputs.flip_ohas_copy()
+    elif type(batch_outputs) == list:
+        return lol_flip_flatten(batch_outputs)
+    else:
+        raise NotImplementedError
 
 def flatten_batch_outputs(batch_outputs):
     """Flattens the outputs of a model into an array with dimensions (total_num_outputs_over_time, 1)

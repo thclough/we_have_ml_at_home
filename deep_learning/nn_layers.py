@@ -22,6 +22,8 @@ import time
 # Create an input layer so (ignore_input_grad) can then be forgotten (weird to calculate gradients this way)
 
 # WEB LAYER
+
+
 class Web(Node):
     """Weights layer to linearly transform inputs
     
@@ -97,7 +99,7 @@ class Web(Node):
         if update_params_flag and input_val is not None:
             
             weights_grad_to_loss = self._calc_weights_grads(output_grad_to_loss, input_val, reg_strength=reg_strength)
-            # adding with padding to accommodate various sequence lengths
+            # adding with padding to accommodate variable sequence lengths
             if self._accumulated_weights_grad_to_loss is None:
                 self._accumulated_weights_grad_to_loss = weights_grad_to_loss
             else:
@@ -269,30 +271,64 @@ class StackedInputLayer(SameDimLayer):
         self.data_input_stack = []
         self.cell_output_grad_stack = []
         self.cell_input_batch_sizes = []
+        self.trend = None
 
-    def store_cell_input(self, input_val):
+    def store_cell_input(self, input_val, track_input_size=False):
+        # validate
         if input_val.shape[-1] != self.dim:
             raise Exception(f"Data dimension mismatch between input and set dimension, data is {input_val.shape} but should be {self.dim}")
-        self.data_input_stack.append(input_val)
-        self.cell_input_batch_sizes.append(len(input_val))
 
-    def load_data(self, data_array):
+        # check for monotonicity either increasing or decreasing
+        if len(self.data_input_stack) >= 1:
+            if self.trend == 1:
+                assert len(input_val) >= len(self.data_input_stack[-1])
+            elif self.trend == 0:
+                assert len(input_val) <= len(self.data_input_stack[-1])
+            elif self.trend == None:
+                if len(input_val) > len(self.data_input_stack[-1]):
+                    self.trend = 1
+                elif len(input_val) < len(self.data_input_stack[-1]):
+                    self.trend = 0
+
+        self.data_input_stack.append(input_val)
+
+        if track_input_size:
+            self.cell_input_batch_sizes.append(len(input_val))
+
+    def load_data(self, data_array, track_input_size=False, load_backwards=False):
         """Load data into input stack so it can be fetched for later use 
         
         Args:
             data_array (numpy array) : data to load in in size (num_examples, timesteps, data_for_timestep) 
-        
+            track_input (bool) : whether or not to track length (batch size) of the data 
+            load_backwards (bool, default=False) : whether or not to load in data where the last element in data array will be read first
         """
+
+        # print(sum(len(data_array[:,t,:]) for t in range(len(data_array.oha_list[-1]))))
+
         if len(self.data_input_stack) == 0:
-            for t in range(data_array.shape[1]):
+            
+            num_timesteps = data_array.shape[1]
+
+            for t in range(num_timesteps):
+                
+                if load_backwards:
+                    t = num_timesteps - t - 1
 
                 timestep_data = data_array[:,t,:]
-        
-                self.store_cell_input(timestep_data)
+                # could be selecting wrong at predict prob
+
+                # print(f"timestep data {timestep_data}")
+
+                self.store_cell_input(timestep_data, track_input_size=track_input_size)
         else:
             raise Exception("Clear data from the input stack")
 
     def discharge_cell_output(self, forward_prop_flag=True):
+        
+        if len(self.data_input_stack) == 1:
+            self.trend = None
+
         return self.data_input_stack.pop(0)
 
     @property
