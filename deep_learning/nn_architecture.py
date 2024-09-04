@@ -14,10 +14,11 @@ import joblib
 # could separate edge validation from the joint search compilation
 # concat layer reset is kind of weird, checking for order of input shapes
 
+# could edge select output model for if only want one output
 
 ## Make recurrent NN submodel check for RNN Web layers
 
-## Add in a GRU
+
 ## Add teacher forcing functionality
 ## Add encoding functionality for functions such as translation
 
@@ -34,6 +35,7 @@ import joblib
 ## # fix flow forward architecture
 # Create Joint models that are not just linear, multiple inputs/outputs allowed from each layer
 # allow for LSTM model to be created
+## Add in a GRU
 
 # REJECTED
 
@@ -301,28 +303,35 @@ class MonoModel(MonoModelPiece):
 class JointedModel:
 
     """Model that can be represented as a digraph with multiple paths,
-    does not require a loss. Recurrency represented thorugh loops of state inputs.
+    does not require a loss. Recurrency represented through loops of state inputs.
 
     Attributes:
         cell_dict (dict) : {node -> target_nodes} graph dictionary that represents a cell
-        backwards (bool) : whether model 
+        backward (bool) : whether model 
     """
 
-    def __init__(self, cell_dict, backwards=False):
+    def __init__(self, cell_dict, backward=False, output_structure=None):
         
         self._has_loss = False
+        self.assembled = False
 
         # unravel models into layers
         cell_graph_layers_dict, self.connected_models = self.unravel_graph_layers(cell_dict)
+
         #print(cell_graph_layers_dict)
         self.cell_layers_dict = cell_graph_layers_dict
+
+        if output_structure is not None:
+            self.add_output_structure(output_structure)
 
         self.has_fit = False
         self._has_dropout = False
 
         self.timestep = 0
 
-        self.backwards = backwards
+        self.backwards = backward
+
+        
 
     @property
     def has_fit(self):
@@ -343,20 +352,60 @@ class JointedModel:
     def recurrent_layers_dict(self):
         return self._recurrent_layers_dict
 
-    # Setting graph dict layers
-
+    # first graph set
+    
     @cell_layers_dict.setter
-    def cell_layers_dict(self, graph_dict_layers):
-        self._val_graph_dict_layers(graph_dict_layers)
+    def cell_layers_dict(self, cell_layers_dict_cand):
+        
+        self._val_graph_dict_layers(cell_layers_dict_cand)
 
-        possible_data_start_nodes = [node for node in graph_dict_layers.keys() if type(node) in (nn_layers.InputLayer, nn_layers.StackedInputLayer)]
-        self.state_start_nodes = [node for node in graph_dict_layers.keys() if type(node) == nn_layers.StateInputLayer]
+        possible_data_start_nodes = [node for node in cell_layers_dict_cand.keys() if type(node) in (nn_layers.InputLayer, nn_layers.StackedInputLayer)]
+        self.state_start_nodes = [node for node in cell_layers_dict_cand.keys() if type(node) == nn_layers.StateInputLayer]
+        possible_output_nodes = [node for node in cell_layers_dict_cand.keys() if type(node) == nn_layers.Splitter and node.output_flag == True]
 
-        self._val_data_nodes(possible_data_start_nodes)
+        self._one_node(possible_data_start_nodes, "data start")
+        self._one_node(possible_output_nodes, "output")
 
         self.data_node = possible_data_start_nodes[0]
+        self.output_node = possible_output_nodes[0]
 
-        state_to_data_paths, data_to_state = self.dfs_joint_search_compilation(graph_dict_layers)
+        self._cell_layers_dict = cell_layers_dict_cand
+
+    # edit the graph
+    def add_output_structure(self, structure):
+        """Set the output layers stemming from the output splitter
+        
+        Args:
+            structure (nn_models.MonoModelPiece or Node) : layer(s) or mod
+
+        """
+        if self.assembled:
+            raise Exception("Cannot change computation graph because it is already set, set output structure before assembly")
+        
+        if type(structure) == MonoModelPiece:
+            more_layers_dict, more_connected_models = self.unravel_graph_layers({self.output_node: [structure]})
+        
+            for model in more_connected_models:
+                if model not in self.connected_models:
+                    self.connected_models.add(model)
+                else:
+                    raise Exception("Model given already a connected model")
+
+            for start_layer, end_layers in more_layers_dict.items():
+                if start_layer == self.output_node:
+                    self.cell_layers_dict[self.output_node] += end_layers
+                else:
+                    self.cell_layers_dict[start_layer] = end_layers
+                
+        elif type(structure) == Node:
+            if structure not in self.cell_layers_dict[self.output_node]:
+                self.cell_layers_dict[self.output_node].append(structure)
+    # Final assembly
+
+    def assemble(self):
+        """finalize the computation graph"""
+        
+        state_to_data_paths, data_to_state = self.dfs_joint_search_compilation(self.cell_layers_dict)
 
         # separate state "alleys" from the data nodes, this does not seems to be really needed
         self.reg_cell_edge_order, state_alley_paths = self.separate_state_alleys(data_to_state)
@@ -373,7 +422,7 @@ class JointedModel:
         if any(type(layer) == nn_layers.ConcatLayer for layer in self.layers):
             self.set_concat_input_dims()
 
-        self._cell_layers_dict = graph_dict_layers
+        self.assembled = True
 
     @staticmethod
     def unravel_graph_layers(graph_dict):
@@ -429,15 +478,11 @@ class JointedModel:
             if type(layer) != nn_layers.Splitter and len(target_layers) > 1:
                 raise Exception(f"Layer {layer} cannot have more than one output node if it is not a splitter")
 
-    def _val_data_nodes(self, data_nodes):
-        """Validate the data nodes of the graph. Make sure there are start nodes and that they have input layers"""
+    def _one_node(self, cand_nodes, node_cat_name):
+        """Validate the nodes of the graph. Make sure there is exactly one"""
         # make sure there are starting nodes
-        if len(data_nodes) == 0 or len(data_nodes) > 1:
-            raise Exception("Network graph must have exactly one data start node")
-
-    def _val_structure(self):
-        if not self._has_loss:
-            raise Exception(f"{self} needs an associated loss")
+        if len(cand_nodes) == 0 or len(cand_nodes) > 1:
+            raise Exception(f"Network graph must have exactly one {node_cat_name} node")
 
     def dfs_joint_search_compilation(self, graph_dict):
         """Search through a model graph starting with an initial_queue of nodes to search.
@@ -592,6 +637,10 @@ class JointedModel:
     
     # INITIALIZATION
 
+    def _val_structure(self):
+        """For nn driver"""
+        pass
+
     def initialize_params(self):
         for layer in self.layers:
             if layer.learnable:
@@ -616,6 +665,9 @@ class JointedModel:
     # BATCH TRAINING
 
     def batch_total_pass(self, X_train, y_train, learning_rate, reg_strength):
+        if not self.assembled:
+            raise Exception("Have not assembled the final graph yet, use assemble to set the graph")
+        
         # forward pass
         self.forward_prop(X_train)
 
@@ -920,3 +972,46 @@ class JointedModel:
         if not isinstance(potential_model, cls):
             raise TypeError(f"Loaded model must be of type {cls}")
         return potential_model
+    
+class Bidirectional:
+    
+    def __init__(self, forward_model, backwards_model):
+        """Bidirectional sequential model where each """
+
+        self.forward_model = forward_model
+
+        self.backward_model = backwards_model
+
+        # check if models have the same input and output dims
+
+        if not self.forward_model.data_node.input_shape ==  self.forward_model.data_node.input_shape:
+            raise Exception("Forwards and backwards models must have the same data input dimension")
+            
+
+    # setter and getters
+    @property
+    def forward_model(self):
+        return self._forward_model
+
+    @forward_model.setter
+    def forward_model(self, forward_model_cand):
+        
+        if forward_model_cand.has_loss:
+            raise Exception("Forward model should not have a loss, only ")
+
+        self._forward_model = forward_model_cand
+
+    @property
+    def backward_model(self):
+        return self._backward_model
+
+    @backward_model.setter
+    def backward_model(self, backward_model_cand):
+
+        if backward_model_cand.backward != True:
+            raise Exception("Backward model should have backward set to True")
+        
+        if backward_model_cand.has_loss:
+            raise Exception("Backward model should not have a loss")
+
+        self._backward_model = backward_model_cand

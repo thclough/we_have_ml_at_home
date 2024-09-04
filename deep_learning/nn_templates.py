@@ -9,12 +9,12 @@ class PlainRNN(nn_architecture.JointedModel):
 
     """
 
-    def __init__(self, state_size, data_input_size, so_model, backwards=False):
+    def __init__(self, state_size, data_input_size, so_model=None, backward=False):
         """
         state_size (int) : number of values in state size array
         data_input_size (int): dimension of the input data
-        so_model (nn_architecture.MonoModelPiece) : model mapping from internal state to the final output of the cell
-        backwards (bool, default=False) : whether or not the model predicts backwards in time (direction of the model), useful for BiDirectional
+        so_model (nn_architecture.MonoModelPiece, default=None) : model mapping from internal state to the final output of the cell
+        backwards (bool, default=False) : whether or not the model predicts backwards in time (direction of the model), useful for Bidirectional
         """
         # state to state model
         ss_model = nn_architecture.MonoModelPiece()
@@ -29,22 +29,22 @@ class PlainRNN(nn_architecture.JointedModel):
         ss_xs_sumjoint = nn_layers.SumLayer(str_id="ss_xs_sum_joint")
         tanh_activation = nn_layers.Activation(node_funcs.TanH, str_id="tanh_joint_activation")
 
-        splitter = nn_layers.Splitter(str_id="tanh splitter")
+        splitter = nn_layers.Splitter(str_id="tanh splitter", output_flag=True)
 
         # put model together in a graph
-        graph_dict = {ss_model: [ss_xs_sumjoint], xs_model: [ss_xs_sumjoint], ss_xs_sumjoint: [tanh_activation], tanh_activation: [splitter], splitter: [so_model,ss_model]}
+        graph_dict = {ss_model: [ss_xs_sumjoint], xs_model: [ss_xs_sumjoint], ss_xs_sumjoint: [tanh_activation], tanh_activation: [splitter], splitter: [ss_model]}
 
-        super().__init__(graph_dict, backwards=backwards)
+        super().__init__(graph_dict, output_structure=so_model, backward=backward)
 
 class PlainLSTM(nn_architecture.JointedModel):
     """Plain LSTM (not deep between layers), must specify the input output model"""
 
-    def __init__(self, state_size, data_input_size, io_model, concat=True, backwards=False):
+    def __init__(self, state_size, data_input_size, io_model=None, concat=True, backward=False):
         """
         Args:
             state_size (int) : number of values in state size array
             data_input_size (int): dimension of the input data
-            io_model (nn_architecture.MonoModelPiece) : model mapping from internal state h to the final output of the cell
+            io_model (nn_architecture.MonoModelPiece or Node, default=None) : model mapping from internal state h to the final output of the cell
             concat (bool, default=True) : whether or not to concat input data with state size 
                 (make false if you have a special data type for input data that will not work with numpy array concat)
             backwards (bool, default=False) : whether or not the 
@@ -62,7 +62,7 @@ class PlainLSTM(nn_architecture.JointedModel):
 
         cell_state_store = nn_layers.StateInputLayer(state_size, str_id="cell state store")
 
-        internal_state_splitter = nn_layers.Splitter(str_id="internal state splitter")
+        state_output_splitter = nn_layers.Splitter(str_id="state output splitter", output_flag=True)
 
         internal_state_store = nn_layers.StateInputLayer(state_size, str_id="internal state store")
 
@@ -94,7 +94,7 @@ class PlainLSTM(nn_architecture.JointedModel):
                         forget_mask: [cell_sum], input_mask: [cell_sum],
                         cell_sum: [cell_splitter], cell_splitter: [cell_activation, cell_state_store],
                         cell_activation: [output_mask],
-                        output_mask: [internal_state_splitter], internal_state_splitter:[io_model, internal_state_store],
+                        output_mask: [state_output_splitter], state_output_splitter : [internal_state_store],
                         # connect to the next cell
                         internal_state_store : [concat_layer],
                         cell_state_store : [forget_mask]}
@@ -137,21 +137,21 @@ class PlainLSTM(nn_architecture.JointedModel):
                           forget_mask: [cell_sum], input_mask: [cell_sum],
                           cell_sum: [cell_splitter], cell_splitter: [cell_activation, cell_state_store],
                           cell_activation: [output_mask],
-                          output_mask: [internal_state_splitter], internal_state_splitter:[io_model, internal_state_store],
+                          output_mask: [state_output_splitter], state_output_splitter:[internal_state_store],
                           # connect to the next cell
                           cell_state_store : [forget_mask]}
 
-        super().__init__(graph_dict, backwards=backwards)
+        super().__init__(graph_dict, output_structure=io_model, backward=backward)
 
 class PlainGRU(nn_architecture.JointedModel):
     """Plain Gated Recurrent Unit (no deep networks between layers), must specify input->output model"""
 
-    def __init__(self, state_size, data_input_size, io_model, concat=True, backwards=False):
+    def __init__(self, state_size, data_input_size, io_model=None, concat=True, backward=False):
         """
         Args:
             state_size (int) : number of values in state size array
             data_input_size (int): dimension of the input data
-            io_model (nn_architecture.MonoModelPiece) : model mapping from internal state h to the final output of the cell
+            io_model (nn_architecture.MonoModelPiece or Node, default=None) : model mapping from internal state h to the final output of the cell
             concat (bool, default=True) : whether or not to concat input data with state size 
                 (make false if you have a special data type for input data that will not work with numpy array concat)
             backwards (bool, default=False) : whether or not the 
@@ -177,7 +177,7 @@ class PlainGRU(nn_architecture.JointedModel):
 
         final_sum = nn_layers.SumLayer(str_id="final_sum")
 
-        state_output_splitter = nn_layers.Splitter(str_id="internal_state_splitter")
+        state_output_splitter = nn_layers.Splitter(str_id="internal_state_splitter", output_flag=True)
 
         internal_state_store = nn_layers.StateInputLayer(state_size, str_id="internal state store")
 
@@ -204,8 +204,8 @@ class PlainGRU(nn_architecture.JointedModel):
             graph_dict = {data_input_layer : [data_input_splitter], data_input_splitter : [concat_layer, cand_concat_layer], internal_state_store: [state_input_splitter],
                         state_input_splitter : [concat_layer, cand_gate_mask, maintain_mask], concat_layer : [update_cand_splitter],
                         update_cand_splitter: [update_gate_model, cand_gate_model], update_gate_model: [update_gate_splitter], cand_gate_model : [cand_gate_mask], cand_gate_mask:[cand_concat_layer],
-                        cand_concat_layer : [cand_model], cand_model :[update_mask],  update_gate_splitter : [subtract_layer, update_mask], subtract_layer : [maintain_mask],
-                        maintain_mask: [final_sum], update_mask:[final_sum], final_sum : [state_output_splitter], state_output_splitter:[internal_state_store, io_model]}
+                        cand_concat_layer : [cand_model], cand_model : [update_mask],  update_gate_splitter : [subtract_layer, update_mask], subtract_layer : [maintain_mask],
+                        maintain_mask: [final_sum], update_mask:[final_sum], final_sum : [state_output_splitter], state_output_splitter: [internal_state_store]}
 
         else: # no concat
             
@@ -242,7 +242,7 @@ class PlainGRU(nn_architecture.JointedModel):
                           # final sum
                           update_mask : [final_sum], maintain_mask : [final_sum],
                           # output
-                          final_sum : [state_output_splitter], state_output_splitter:[internal_state_store, io_model]
+                          final_sum : [state_output_splitter], state_output_splitter:[internal_state_store]
                           }
 
-        super().__init__(graph_dict, backwards=backwards)
+        super().__init__(graph_dict, output_structure=io_model, backward=backward)

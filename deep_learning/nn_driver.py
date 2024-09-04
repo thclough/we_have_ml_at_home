@@ -166,6 +166,7 @@ class NNDriver:
             if epoch % epoch_gap == 0:
                 gap_start_time = time.time()
                 
+                cost_start_time = time.time()
                 epoch_train_cost = self.generator_cost(self.data_factory.train_generator, self.reg_strength)
                 self._train_costs.append(epoch_train_cost)
 
@@ -181,6 +182,8 @@ class NNDriver:
                 else:
                     self._dev_costs.append(None)
 
+                cost_end_time=time.time()
+                print(f"cost calc time : {cost_end_time-cost_start_time} seconds")
                 if display:
                     self._update_epoch_plot(fig, ax, epoch, end_epoch)
 
@@ -270,7 +273,7 @@ class NNDriver:
         """"Calculate loss on the eval chunk"""
 
         if isinstance(eval_generator, deep_learning.data_factory_blueprints.MiniBatchAssembly):
-            
+
             cost = self.model.cost(eval_generator.X, eval_generator.y, reg_strength)
 
         else:

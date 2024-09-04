@@ -542,12 +542,16 @@ class Splitter(SameDimLayer):
     
     learnable = False
 
-    def __init__(self, use_bias=True, str_id=None):
+    def __init__(self, use_bias=True, output_flag=False, str_id=None):
         super().__init__(str_id=str_id)
 
         # input stack for each cell
         self.input = None
         self.cell_output_grad_stack = []
+        
+        # whether or not splitter leads to an output
+        self.output_flag = output_flag
+
     # keep track of timestep for upgrading bias
 
     def discharge_cell_output(self, forward_prop_flag=True):
@@ -752,6 +756,10 @@ class ConcatLayer(Node):
         # discharge in reverse order of input through splitting with right order of dimensions
         return self.input_grads.pop()
     
+def ConcatLayerStack(self):
+    pass
+
+
 class MultLayer(SameDimLayer):
     """Piecewise multiplication layer often used for gates"""
     
