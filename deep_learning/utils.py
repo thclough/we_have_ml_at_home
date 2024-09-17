@@ -340,4 +340,45 @@ def join_paths(starts_of_paths, ends_of_paths):
         connected_paths.append(start+end)
     
     return connected_paths
+
+def uneven_swap_axes(output_hold):
+    """Shifts (timesteps, num_examples, categories) output to (num_examples, timesteps, categories) output"""
+
+    one_val_flag = len(output_hold[0][0]) == 1
+
+    output_hold_final = []
+    max_batch_size = max(len(output_hold[0]),len(output_hold[-1])) # for either increasing or decreasing lengths
+
+    for m in range(max_batch_size):
+        m_list = []
+        for output in output_hold:
+            if one_val_flag:
+                output_list = output.flatten()
+            else:
+                output_list = output.tolist()
+            if m < len(output):
+                m_list.append(output_list[m])
+
+        output_hold_final.append(m_list)
+
+    return output_hold_final
          
+def productExceptSelf(list_of_arrays):
+    """Return list where index corresponds to product of 
+    every other element in original list except for the index value in original list"""
+
+    if not list_of_arrays:
+        raise Exception
+        return []
+
+    res = [np.ones(list_of_arrays[0].shape)] * len(list_of_arrays)
+
+    for i in range(1, len(list_of_arrays)):
+        res[i] = res[i-1] * list_of_arrays[i-1]
+
+    postfix = np.ones(list_of_arrays[0].shape)
+    for i in range(len(list_of_arrays) - 1, -1, -1):
+        res[i] *= postfix
+        postfix *= list_of_arrays[i]
+
+    return res

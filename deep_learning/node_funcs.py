@@ -28,6 +28,21 @@ class Sigmoid:
         
         """
         return Sigmoid.forward(x) * (1 - Sigmoid.forward(x))
+    
+class HardSigmoid:
+    
+    @staticmethod
+    def forward(x):
+        """compute the sigmoid for the input x
+        """
+        return np.maximum(0, np.minimum(1, (x+1)/2))
+    
+    @staticmethod
+    def backward(x):
+        """
+        
+        """
+        return ((-2 <= x) & (x <= 2)) * .5
 
 class Identity:
 

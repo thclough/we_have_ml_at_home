@@ -1,5 +1,5 @@
 import numpy as np
-from deep_learning import no_resources, node_funcs, utils
+from deep_learning import no_resources, node_funcs, utils, initializers
 from deep_learning.node import Node
 import time
 
@@ -10,6 +10,11 @@ import time
 # make joint layer a parent class, joint layer functionalities
 # discharge cell output forward prop flag, probably could differentiate on learnabl
 # input shape idx for concat layer is kind of weird 
+
+# store "cell" is ambiguous between things like regular concat and verticalconcat across cell
+    # could just make something like a forward and back to unify and simplify
+    # what is the real difference between passing and returning an input val vs. storing a retrieving
+        # ANSWER: with storing and retrieving does not need to be sequential
 
 # COMPLETED
 # make use_bias term so does not have to be automatically decided
@@ -34,11 +39,12 @@ class Web(Node):
 
     learnable = True
     
-    def __init__(self, output_shape, input_shape=None, init_factor=1, use_bias=True, seed=100, str_id=None):
+    def __init__(self, output_shape, input_shape=None, init_factor=1, use_bias=True, seed=100, str_id=None, initializer=initializers.RandomNormal):
         
         self.calc_input_grad_flag = True
         # init factor two for ReLU
         self.init_factor = init_factor
+        self._initializer = initializer
         self.use_bias = use_bias
 
         super().__init__(str_id)
@@ -54,15 +60,27 @@ class Web(Node):
         self._input_stack = []
 
         self.timestep = 0
+        self.time_counter = 0
 
     # INITIALIZE PARAMS
 
-    def initialize_params(self):
+    def initialize_params2(self):
         
         input_size = utils.dim_size(self.input_shape)
 
         rng = np.random.default_rng(self._seed)
         self._weights = rng.normal(size=(self.input_shape, self.output_shape)) * np.sqrt(self.init_factor / input_size)
+
+        if self.use_bias:
+            self._bias = np.zeros(shape=self.output_shape)
+
+        self._accumulated_weights_grad_to_loss = None
+        self._accumulated_bias_grad_to_loss = None
+        
+    def initialize_params(self):
+        
+        self._weights = self._initializer(self.input_shape, self.output_shape, self._seed)
+        #self._weights = rng.normal(size=(self.input_shape, self.output_shape)) * np.sqrt(self.init_factor / input_size)
 
         if self.use_bias:
             self._bias = np.zeros(shape=self.output_shape)
@@ -104,15 +122,8 @@ class Web(Node):
                 self._accumulated_weights_grad_to_loss = weights_grad_to_loss
             else:
                 utils.adding_with_padding(self._accumulated_weights_grad_to_loss, weights_grad_to_loss)
-
             # self._accumulated_weights_grad_to_loss += weights_grad_to_loss # these operations are expensive
-
-            # for BPTT, if are processing the first reached input for the layer, then can update with accumulated gradient
-            if len(self._input_stack) == 0:
-                # print(f"Updating web on {self.str_id}")
-                self._update_param(self._weights, self._accumulated_weights_grad_to_loss, learning_rate)
-                self._accumulated_weights_grad_to_loss = None
-
+            
             if self.use_bias:
                 bias_grad_to_loss = self._calc_bias_grads(output_grad_to_loss)
                 if self._accumulated_bias_grad_to_loss is None:
@@ -120,11 +131,34 @@ class Web(Node):
                 else:
                     utils.adding_with_padding(self._accumulated_bias_grad_to_loss, bias_grad_to_loss)
                 #self._accumulated_bias_grad_to_loss += bias_grad_to_loss
+            self.time_counter +=1
+            # for BPTT, if are processing the first reached input for the layer, then can update with accumulated gradient
+            if len(self._input_stack) == 0:
+                # print()
+                # print(f"Updating web on {self.str_id}")
+                # print("grad percentage % avg of param")
+                # print((self._accumulated_weights_grad_to_loss/self._weights).mean())
+                # print(np.median(self._accumulated_weights_grad_to_loss/self._weights))
+                # print("gradient norm")
+                # print(np.linalg.norm(self._accumulated_weights_grad_to_loss))
+                # input("continue")
+                
+                if self.str_id == "webby":
+                    self.time_counter = .1
 
-                if len(self._input_stack) == 0:
+                self._update_param(self._weights, self._accumulated_weights_grad_to_loss / self.time_counter, learning_rate) # 
+                self._accumulated_weights_grad_to_loss = None
+                
+                # if self.str_id == "webby":
+                #     print("new webby weights")
+                #     print(self._weights)
+
+                if self.use_bias:
                     # print(f"Updating bias on {self.str_id}")
-                    self._update_param(self._bias, self._accumulated_bias_grad_to_loss, learning_rate)
+                    self._update_param(self._bias, self._accumulated_bias_grad_to_loss /  self.time_counter, learning_rate) # 
                     self._accumulated_bias_grad_to_loss = None
+                    
+                self.time_counter = 0
 
         return input_grad_to_loss
 
@@ -222,7 +256,7 @@ class Activation(SameDimLayer):
 # INPUT LAYERS
 
 class InputLayer(SameDimLayer):
-    """Base class for data input, parent class for more complex"""
+    """Base class for data inpu"""
     learnable = False
 
     def __init__(self, dim, str_id=None):
@@ -295,7 +329,7 @@ class StackedInputLayer(SameDimLayer):
         if track_input_size:
             self.cell_input_batch_sizes.append(len(input_val))
 
-    def load_data(self, data_array, track_input_size=False, load_backwards=False):
+    def load_data(self, data_array, track_input_size=False, load_backward=False):
         """Load data into input stack so it can be fetched for later use 
         
         Args:
@@ -312,7 +346,7 @@ class StackedInputLayer(SameDimLayer):
 
             for t in range(num_timesteps):
                 
-                if load_backwards:
+                if load_backward:
                     t = num_timesteps - t - 1
 
                 timestep_data = data_array[:,t,:]
@@ -356,8 +390,6 @@ class Loss(SameDimLayer):
         output = self.activation_func.forward(input_val)
 
         if forward_prop_flag:
-            # if self.loss_func == node_funcs.MSE:
-            #     self._input_stack.append(input_val)
             self._output_stack.append(output)
 
         return output
@@ -375,7 +407,12 @@ class Loss(SameDimLayer):
     def back_up(self, y_true):
 
         output = self._output_stack.pop()
-
+        
+        # print("predicted")
+        # print(output)
+        # print("y_true")
+        # print(y_true)
+        
         input_grad_to_loss = self.loss_func.backward(output, y_true)
 
         return input_grad_to_loss
@@ -547,9 +584,7 @@ class Splitter(SameDimLayer):
 
         # input stack for each cell
         self.input = None
-        self.cell_output_grad_stack = []
-        
-        # whether or not splitter leads to an output
+        self.cell_output_grad_stack = []        # whether or not splitter leads to an output
         self.output_flag = output_flag
 
     # keep track of timestep for upgrading bias
@@ -579,11 +614,16 @@ class Splitter(SameDimLayer):
 
         if len(self.cell_output_grad_stack) == 0:
             raise Exception("No layer output gradients to produce output gradients")
-
+                
+        num_splits = len(self.cell_output_grad_stack) ## HARAM
+        
         self.input_grad = 0
         while self.cell_output_grad_stack:
             self.input_grad += self.cell_output_grad_stack.pop()
-
+            
+        self.input_grad = self.input_grad / num_splits ## HARAM
+        
+    
 class SumLayer(SameDimLayer): # SOME TYPE OF JOINT
     """Merge model outputs from multiple inputs and sum"""
     learnable = True
@@ -597,6 +637,7 @@ class SumLayer(SameDimLayer): # SOME TYPE OF JOINT
         self.input_grad = None
 
         self.cur_timestep = 0
+        self.time_counter = 0
 
     def store_cell_input(self, input_val):
         """Place an input in the input stack"""
@@ -638,7 +679,7 @@ class SumLayer(SameDimLayer): # SOME TYPE OF JOINT
         return self.input_grad
 
     def set_input_grad(self, output_grad_to_loss):
-        self.input_grad = output_grad_to_loss
+        self.input_grad = output_grad_to_loss # just passing through the output grad to loss
 
     def back_up(self, output_grad_to_loss, learning_rate, reg_strength, update_params_flag=True):
         
@@ -655,13 +696,15 @@ class SumLayer(SameDimLayer): # SOME TYPE OF JOINT
                 self._accumulated_bias_grad_to_loss = bias_grad_to_loss
             else:
                 utils.adding_with_padding(self._accumulated_bias_grad_to_loss, bias_grad_to_loss)
+            self.time_counter += 1
             #self._accumulated_bias_grad_to_loss += bias_grad_to_loss
 
             if self.cur_timestep == 0:
                 # print(f"updating bias on {self.str_id}")
-                self._update_param(self._bias, self._accumulated_bias_grad_to_loss, learning_rate)
+                self._update_param(self._bias, self._accumulated_bias_grad_to_loss / self.time_counter, learning_rate)
                 self._accumulated_bias_grad_to_loss = None
-
+                
+                self.time_counter = 0
         # output grad to loss is the input grad to loss
         return self.input_grad
     
@@ -710,6 +753,9 @@ class ConcatLayer(Node):
 
         self.input_shapes_tracker = []
         self.input_shapes_tracker_temp = []
+
+        # vertical concat
+        # shape dim changes to 0, hstack to vstack, zero lpad to something else
         
     def store_cell_input(self, input_val):
         
@@ -731,7 +777,7 @@ class ConcatLayer(Node):
         self.cell_input_stack.append(input_val)
 
     def discharge_cell_output(self, forward_prop_flag=True):
-
+        """This is why you need to specify the output shape"""
         output = np.hstack(self.cell_input_stack)
         # clear the output
         self.cell_input_stack = []
@@ -755,9 +801,71 @@ class ConcatLayer(Node):
     def discharge_cell_input_grad(self):
         # discharge in reverse order of input through splitting with right order of dimensions
         return self.input_grads.pop()
+
+class VerticalCellOutputConcat(SameDimLayer):
     
-def ConcatLayerStack(self):
-    pass
+    learnable = False
+    
+    """Concats stored outputs across different cells 
+    
+    Attributes:
+        stack_upwards (bool) : Whether or not to stack sequential inputs on top of each other 
+            (default will stack below each other)
+        input_stack (list) : list of the received inputs
+        input_batch_sizes (list) : list of the input batch sizes
+        input_grads (list) : list of the input grads corresponding to input_stack
+
+    """
+
+    def __init__(self, stack_upwards=False, str_id=None):
+
+        super().__init__(dim=None, str_id=str_id)
+
+        self.stack_upwards = stack_upwards
+        self.input_batch_sizes = []
+        self.input_stack = []
+
+    def store_cell_input(self, input_val):
+        
+        # check shape
+        if input_val.shape[-1] != self.input_shape:
+            raise Exception(f"Input dimension should be {self.input_shape} but input passed is dimension {input_val.shape[-1]}")
+
+        # gather batch size and append
+        self.input_batch_sizes.append(input_val.shape[0])
+        self.input_stack.append(input_val)
+
+    def discharge_cell_output(self, forward_prop_flag=True):
+        # reverse order of elements and batch sizes
+        if self.stack_upwards:
+            self.input_stack = self.input_stack[::-1]
+            self.input_batch_sizes = self.input_batch_sizes[::-1]
+        
+        output = np.vstack(self.input_stack)
+
+        self.input_stack = []
+        if not forward_prop_flag:
+            self.input_batch_sizes = []
+
+        return output
+    
+    def store_cell_output_grad(self, output_grad_to_loss):
+        
+        if output_grad_to_loss.shape[-1] != self.output_shape:
+            raise Exception(f"Output dimension should be {self.output_shape} but input passed is dimension {output_grad_to_loss.shape[-1]}")
+        
+        vsplit_idxs = np.cumsum(self.input_batch_sizes[:-1])
+        # num_batches = len(self.input_batch_sizes)
+        self.input_batch_sizes = []
+
+        self.input_grads = np.vsplit(output_grad_to_loss, vsplit_idxs)
+
+        # flip back
+        if self.stack_upwards:
+            self.input_grads = self.input_grads[::-1]
+
+    def discharge_cell_input_grad(self):
+        return self.input_grads.pop()
 
 
 class MultLayer(SameDimLayer):
@@ -784,24 +892,23 @@ class MultLayer(SameDimLayer):
 
     def discharge_cell_output(self, forward_prop_flag=True):
         
-        if len(self.cell_input_stack) > 1:
+        if len(self.cell_input_stack) > 1: # to handle forget mask in lstm 
             product = utils.array_list_product(self.cell_input_stack)
         else:
             product = np.zeros(self.cell_input_stack[0].shape)
 
-        self.save_io_grads(product)
+        # utils.productExceptSelf(array_product)
+        self.save_io_grads()
+        self.cell_input_stack = []
 
         return product
     
-    def save_io_grads(self, array_product):
+    def save_io_grads(self):
         """calculate the io grads for the cell by input"""
-        io_grads = []
-        while self.cell_input_stack:
-            # popping here puts io_grads in order of last input received to first input received for the cell
-            input_val = self.cell_input_stack.pop()
-            io_grad = array_product / input_val
-            io_grads.append(io_grad)
+        io_grads = utils.productExceptSelf(self.cell_input_stack)
+
         self.cell_io_grads_list.append(io_grads)
+        
 
     def store_cell_output_grad(self, output_grad_val):
         # set up node for calculating cell input grads by input
@@ -810,7 +917,7 @@ class MultLayer(SameDimLayer):
         self.output_grad = output_grad_val
 
     def discharge_cell_input_grad(self):
-        
+
         # fetch the correct io grad for the input last input received -> first input received
         io_grad = self.cur_cell_io_grads.pop(0)
 

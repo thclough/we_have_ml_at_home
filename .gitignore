@@ -4,3 +4,4 @@
 *test*.py
 models/
 *.DS_Store*
+.spyproject/

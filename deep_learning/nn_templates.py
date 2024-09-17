@@ -1,4 +1,4 @@
-from deep_learning import nn_architecture, nn_layers, node_funcs
+from deep_learning import nn_architecture, nn_layers, node_funcs, initializers
 
 class PlainRNN(nn_architecture.JointedModel):
     """Plain RNN (not deep), must specify the state to output model
@@ -39,7 +39,7 @@ class PlainRNN(nn_architecture.JointedModel):
 class PlainLSTM(nn_architecture.JointedModel):
     """Plain LSTM (not deep between layers), must specify the input output model"""
 
-    def __init__(self, state_size, data_input_size, io_model=None, concat=True, backward=False):
+    def __init__(self, state_size, data_input_size, io_model=None, concat=True, backward=False, rec_init=initializers.Orthogonal, data_init=initializers.GlorotUniform):
         """
         Args:
             state_size (int) : number of values in state size array
@@ -103,18 +103,18 @@ class PlainLSTM(nn_architecture.JointedModel):
             # internal state input
             internal_state_input_splitter = nn_layers.Splitter(str_id="internal_state_input_splitter")
 
-            forget_web  = nn_layers.Web(state_size, input_shape=state_size, use_bias=False, str_id="forget web")
-            input_web = nn_layers.Web(state_size, input_shape=state_size, use_bias=False, str_id="input web")
-            cand_web = nn_layers.Web(state_size, input_shape=state_size, use_bias=False, str_id="cand web")
-            output_web = nn_layers.Web(state_size, input_shape=state_size, use_bias=False, str_id="output web")
+            forget_web = nn_layers.Web(state_size, input_shape=state_size, use_bias=False, str_id="forget web", initializer=rec_init)
+            input_web = nn_layers.Web(state_size, input_shape=state_size, use_bias=False, str_id="input web", initializer=rec_init)
+            cand_web = nn_layers.Web(state_size, input_shape=state_size, use_bias=False, str_id="cand web", initializer=rec_init)
+            output_web = nn_layers.Web(state_size, input_shape=state_size, use_bias=False, str_id="output web", initializer=rec_init)
 
             # data input
             data_input_splitter = nn_layers.Splitter(str_id="data_input_splitter")
 
-            forget_web_data = nn_layers.Web(state_size, input_shape=data_input_size, use_bias=False, str_id="forget web data")
-            input_web_data = nn_layers.Web(state_size, input_shape=data_input_size, use_bias=False, str_id="input web data")
-            cand_web_data = nn_layers.Web(state_size, input_shape=data_input_size, use_bias=False, str_id="cand web data")
-            output_web_data = nn_layers.Web(state_size, input_shape=data_input_size, use_bias=False, str_id="output web data")
+            forget_web_data = nn_layers.Web(state_size, input_shape=data_input_size, use_bias=False, str_id="forget web data", initializer=data_init)
+            input_web_data = nn_layers.Web(state_size, input_shape=data_input_size, use_bias=False, str_id="input web data", initializer=data_init)
+            cand_web_data = nn_layers.Web(state_size, input_shape=data_input_size, use_bias=False, str_id="cand web data", initializer=data_init)
+            output_web_data = nn_layers.Web(state_size, input_shape=data_input_size, use_bias=False, str_id="output web data", initializer=data_init)
             # sum layers
 
             forget_sum = nn_layers.SumLayer(str_id="forget sum")

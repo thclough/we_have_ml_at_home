@@ -51,7 +51,7 @@ class NNDriver:
     def _fit_clear(self, batch_prob, batch_seed, verbose):
 
         # validate inputs def validate_structure
-        self.model._val_structure()
+        self.model.val_structure()
         
         # clear data for the first fit
         self.model.has_fit = True
@@ -166,7 +166,6 @@ class NNDriver:
             if epoch % epoch_gap == 0:
                 gap_start_time = time.time()
                 
-                cost_start_time = time.time()
                 epoch_train_cost = self.generator_cost(self.data_factory.train_generator, self.reg_strength)
                 self._train_costs.append(epoch_train_cost)
 
@@ -182,8 +181,6 @@ class NNDriver:
                 else:
                     self._dev_costs.append(None)
 
-                cost_end_time=time.time()
-                print(f"cost calc time : {cost_end_time-cost_start_time} seconds")
                 if display:
                     self._update_epoch_plot(fig, ax, epoch, end_epoch)
 
