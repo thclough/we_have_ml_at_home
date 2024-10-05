@@ -1,4 +1,4 @@
-from deep_learning import nn_architecture, nn_layers, node_funcs, initializers
+from . import nn_architecture, nn_layers, node_funcs, initializers
 
 class PlainRNN(nn_architecture.JointedModel):
     """Plain RNN (not deep), must specify the state to output model

@@ -2,7 +2,7 @@ import gzip
 import os
 import traceback
 import regex as re
-from deep_learning import nn_layers, no_resources
+from . import nn_layers, no_resources
 import numpy as np
 
 def pos_int(cand, var_name):

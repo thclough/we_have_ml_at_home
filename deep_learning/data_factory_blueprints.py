@@ -6,7 +6,7 @@ import numpy as np
 import queue
 import threading
 import warnings
-from deep_learning import utils, no_resources
+from . import utils, no_resources
 import pandas as pd
 
 # TODO

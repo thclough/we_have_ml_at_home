@@ -6,7 +6,7 @@ import re
 import time
 import random
 from contextlib import ExitStack
-from deep_learning import utils
+from . import utils
 
 #TODO
 

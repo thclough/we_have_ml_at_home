@@ -1,10 +1,12 @@
 import numpy as np
-from deep_learning import no_resources, node_funcs, utils, initializers
-from deep_learning.node import Node
+from . import no_resources, node_funcs, utils, initializers
+from .node import Node
 import time
 
 
 # TODO
+
+# change to dummy hidden state fed in
 
 # have to fix how these timesteps are kept track of (namely in SumLayer), excess forward prop flags
 # make joint layer a parent class, joint layer functionalities
@@ -894,8 +896,11 @@ class MultLayer(SameDimLayer):
         
         if len(self.cell_input_stack) > 1: # to handle forget mask in lstm 
             product = utils.array_list_product(self.cell_input_stack)
-        else:
+        elif len(self.cell_input_stack) == 1:
             product = np.zeros(self.cell_input_stack[0].shape)
+            # this should be onese
+        else:
+            raise Exception("No cell inputs to MultLayer")
 
         # utils.productExceptSelf(array_product)
         self.save_io_grads()

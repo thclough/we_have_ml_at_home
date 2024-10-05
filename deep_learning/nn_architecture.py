@@ -2,8 +2,8 @@
 # have their own forward prop, epoch, and back prop routines
 
 import numpy as np
-from deep_learning import nn_layers, node_funcs, utils, no_resources
-from deep_learning.node import Node
+from . import nn_layers, node_funcs, utils, no_resources
+from .node import Node
 import copy
 import joblib
 

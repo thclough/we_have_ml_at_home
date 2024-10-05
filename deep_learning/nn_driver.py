@@ -3,9 +3,8 @@
 import time
 import numpy as np
 import joblib
-from deep_learning import node_funcs, learning_funcs, utils
+from . import node_funcs, learning_funcs, utils, data_factory_blueprints
 import matplotlib.pyplot as plt
-import deep_learning.data_factory_blueprints
 
 # TODO
 
