@@ -132,7 +132,7 @@ def count_csv_lines(source):
         
     return num_lines
 
-def chop_up_csv(source_path, split_dict, header=True, seed=100):
+def chop_up_csv(source_path, split_dict, header_flag=True, seed=100):
     """Section given data source into different sets, 
     multinomial draw for each line of data corresponding to file destination
     
@@ -151,6 +151,8 @@ def chop_up_csv(source_path, split_dict, header=True, seed=100):
 
     opener = utils.JarOpener(source_path)
     target_dir = utils.get_file_dir(source_path)
+    
+    rng = np.random.default_rng(seed=100)
 
     with ExitStack() as stack:
 
@@ -159,13 +161,13 @@ def chop_up_csv(source_path, split_dict, header=True, seed=100):
 
         output_writers = [csv.writer(stack.enter_context(open(f"{target_dir}/{output_name}", "w", newline=""))) for output_name in ordered_names]
 
-        if header:
+        if header_flag:
             header = next(orig_file_reader)
             for writer in output_writers:
                 writer.writerow(header)
         
         for row in orig_file_reader:
-            assigned = np.random.multinomial(1, ordered_probs, size=1).argmax()
+            assigned = rng.multinomial(1, ordered_probs, size=1).argmax()
             output_writers[assigned].writerow(row)
 
 def _val_chop_up_csv(source_path, split_dict):
