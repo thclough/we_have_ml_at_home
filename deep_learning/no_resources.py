@@ -34,7 +34,7 @@ from . import utils
 
 
 # shuffle based on https://towardsdatascience.com/randomizing-very-large-datasets-e2b14e507725
-def shuffle_in_memory(source, output, header_bool=False):
+def shuffle_in_memory(source, output, header_bool=False, rng=None):
     """Shuffle lines from a file after reading the entire file into memory
     
     Args:
@@ -42,12 +42,16 @@ def shuffle_in_memory(source, output, header_bool=False):
         output (file-like) : destination to write to
         header_bool (bool, default=False) : whether or not source file has header
     """
+
     with open(source) as sf:
         if header_bool:
             header = sf.readline()
         lines = sf.readlines()
+        
+    if rng is None:
+        rng = np.random.default_rng()
 
-    random.shuffle(lines)
+    rng.shuffle(lines)
 
     with open(output, "w") as of:
         if header_bool:
@@ -73,20 +77,28 @@ def merge_files(temp_files, output, header=None):
                     of.write(line)
                     line = tf.readline()
             
-def shuffle(source, output, memory_limit, file_split_count=10, header_bool=False):
+def shuffle(source, output, memory_limit=None, line_limit=None, file_split_count=10, header_bool=False, rng=None):
     """Shuffle lines from large source file into output file without reading the entire source file into memory
 
     Args:
         source (file-like) : file-like source whose lines need to be shuffled
         output (file-like) : destination to write to
-        memory_limit (int) : byte limit to shuffle in memory
+        memory_limit (int, default=None) : byte limit to shuffle in memory
+        line_limit (int, default=None) : max num lines for shuffle in memory
         file_split_count (int, default=10) : number of temp files to create, relates to recursion depth
         header_bool (bool, default=False) : whether or not source file has header
     """
+    
+    if memory_limit and line_limit or (memory_limit is None and line_limit is None):
+        raise Exception("Exactly one of memory_limit or line_limit must be declared")
 
     header = None
-    if os.path.getsize(source) < memory_limit:
-        shuffle_in_memory(source, output, header_bool)
+    
+    if rng is None:
+        rng = np.random.default_rng()
+        
+    if (memory_limit and os.path.getsize(source) < memory_limit) or (line_limit and line_limit <= count_csv_lines(source)):
+        shuffle_in_memory(source, output, header_bool, rng=rng)
     else:
         with ExitStack() as stack:
             temp_files = [stack.enter_context(tempfile.NamedTemporaryFile("w+", delete=False)) for i in range(file_split_count)]
@@ -96,13 +108,29 @@ def shuffle(source, output, memory_limit, file_split_count=10, header_bool=False
             if header_bool:
                 header = sf.readline()
             for line in sf: 
-                random_file_idx = random.randint(0, len(temp_files) - 1)
+                random_file_idx = rng.integers(0, len(temp_files) - 1)
                 temp_files[random_file_idx].write(line)
         
         for temp_file in temp_files:
-            shuffle(temp_file.name, temp_file.name, memory_limit, file_split_count, header_bool=False)
+            shuffle(temp_file.name, temp_file.name, memory_limit, line_limit, file_split_count, header_bool=False, rng=rng)
 
         merge_files(temp_files, output, header)
+
+def count_csv_lines(source):
+    """count lines in data file
+    
+    Args:
+        source (file-like) : file-like source whose lines are countes
+    
+    Returns:
+        num_lines (int) : number of lines in the source file
+    """
+    
+    with open(source) as data_file:
+        reader = csv.reader(data_file)
+        num_lines = sum(1 for line in reader)
+        
+    return num_lines
 
 def chop_up_csv(source_path, split_dict, header=True, seed=100):
     """Section given data source into different sets, 
