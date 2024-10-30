@@ -268,7 +268,7 @@ class NNDriver:
     def generator_cost(self, eval_generator, reg_strength):
         """"Calculate loss on the eval chunk"""
 
-        if isinstance(eval_generator, deep_learning.data_factory_blueprints.MiniBatchAssembly):
+        if isinstance(eval_generator, data_factory_blueprints.MiniBatchAssembly):
 
             cost = self.model.cost(eval_generator.X, eval_generator.y, reg_strength)
 
@@ -340,7 +340,7 @@ class NNDriver:
 
         labels_dict = {set_name:set() for set_name in self.data_factory.dataset_names}
 
-        if isinstance(self.data_factory, deep_learning.data_factory_blueprints.ChunkFactory):
+        if isinstance(self.data_factory, data_factory_blueprints.ChunkFactory):
             for chunk_data_dict in self.data_factory.generate_all():
                 for set_name, data_chunk in chunk_data_dict.items():
                     
@@ -351,7 +351,7 @@ class NNDriver:
 
                     self._modify_labels_and_class_matrix_dict(X_eval, y_eval, labels, class_matrix_dict)
                 
-        elif isinstance(self.data_factory, deep_learning.data_factory_blueprints.MiniBatchFactory):
+        elif isinstance(self.data_factory, data_factory_blueprints.MiniBatchFactory):
             mb_data_dict = self.data_factory.generate_all()
             for set_name, data in mb_data_dict.items():
                 

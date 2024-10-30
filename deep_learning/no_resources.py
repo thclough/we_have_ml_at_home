@@ -152,7 +152,7 @@ def chop_up_csv(source_path, split_dict, header_flag=True, seed=100):
     opener = utils.JarOpener(source_path)
     target_dir = utils.get_file_dir(source_path)
     
-    rng = np.random.default_rng(seed=100)
+    rng = np.random.default_rng(seed=seed)
 
     with ExitStack() as stack:
 
