@@ -97,7 +97,7 @@ def shuffle(source, output, memory_limit=None, line_limit=None, file_split_count
     if rng is None:
         rng = np.random.default_rng()
         
-    if (memory_limit and os.path.getsize(source) < memory_limit) or (line_limit and line_limit <= count_csv_lines(source)):
+    if (memory_limit and os.path.getsize(source) < memory_limit) or (line_limit and count_csv_lines(source) <= line_limit):
         shuffle_in_memory(source, output, header_bool, rng=rng)
     else:
         with ExitStack() as stack:
