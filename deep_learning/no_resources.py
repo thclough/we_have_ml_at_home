@@ -135,6 +135,7 @@ def count_csv_lines(source):
 def chop_up_csv(source_path, split_dict, header_flag=True, seed=100):
     """Section given data source into different sets, 
     multinomial draw for each line of data corresponding to file destination
+    because of random process, performs shuffling and distributing
     
     Args:
         source_path (str) : path of file to break up
@@ -183,6 +184,9 @@ def _val_chop_up_csv(source_path, split_dict):
 
     if val_array.sum() != 1:
         raise Exception("Probs must sum to 1")
+        
+        
+## DATA STRUCTURES
 
 class OneHotTensor:
     """Multiple one hot arrays stacked in sequential order
